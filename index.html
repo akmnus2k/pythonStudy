@@ -38,9 +38,23 @@
   .card {
     background: var(--card); border: 1px solid var(--soft);
     border-radius: 12px; padding: 12px 14px; margin-bottom: 10px;
-    display: flex; align-items: center; gap: 10px;
   }
+  .card .row { display: flex; align-items: center; gap: 10px; }
   .card .info { flex: 1; min-width: 0; }
+  .next-step { font-size: 0.85rem; color: var(--muted); margin-top: 4px; }
+
+  .actions { display: flex; gap: 6px; margin-top: 8px; align-items: center; }
+  .actions button { padding: 4px 10px; font-size: 0.8rem; color: var(--muted); }
+  .actions .spacer { flex: 1; }
+
+  .subs { margin-top: 8px; border-top: 1px solid var(--soft); padding-top: 8px; }
+  .sub-line { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 0.92rem; }
+  .sub-line input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--primary-dark); }
+  .sub-line .sub-name { flex: 1; }
+  .sub-line .sub-done { color: var(--muted); text-decoration: line-through; }
+  .sub-line button { padding: 2px 8px; background: none; color: var(--muted); }
+  .sub-add { display: flex; gap: 6px; margin-top: 6px; }
+  .sub-add input { flex: 1; padding: 8px; }
   .card .name { font-weight: 600; color: var(--text-strong); }
   .fire { color: var(--muted); font-size: 0.85rem; }
 
@@ -152,6 +166,13 @@
 
 <script>
 "use strict";
+// 脚本一旦出错就明明白白显示出来，不许"点了没反应"这种静默失败
+window.addEventListener("error", e => {
+  const el = document.getElementById("flash");
+  el.textContent = "❌ 页面出错：" + e.message;
+  el.style.display = "block";
+});
+
 const KEY = "adhd_tasks_v1";
 
 // ---------- 日期（用本地时间，不能用toISOString——那是UTC，晚上8点后会差一天） ----------
@@ -179,12 +200,14 @@ const save = () => {
 };
 
 function fixOldTasks(list) {
+  // 不用 ??= 这类新语法：老手机浏览器解析不了会让整个脚本罢工
   for (const t of list) {
-    t.last_done ??= "";
-    t.times ??= 1;
-    t.left ??= t.done ? 0 : 1;
-    t.streak ??= 0;
-    t.last_full ??= "";
+    if (t.last_done === undefined) t.last_done = "";
+    if (t.times === undefined) t.times = 1;
+    if (t.left === undefined) t.left = t.done ? 0 : 1;
+    if (t.streak === undefined) t.streak = 0;
+    if (t.last_full === undefined) t.last_full = "";
+    if (t.subs === undefined) t.subs = [];   // 分解步骤 [{name, done}]
   }
 }
 
@@ -198,10 +221,20 @@ function resetDailyTasks(list) {
 }
 
 function visibleTasks() {
-  const daily = tasks.filter(t => !t.done && t.category === "日常");
-  const other = tasks.filter(t => !t.done && t.category !== "日常")
-                     .sort((a, b) => a.priority - b.priority);
-  return daily.concat(other);
+  // 顺序 = 页面顺序：近期 → 日常 → 兴趣；各区内部按数组顺序（↑↓手动调整）
+  const sec = c => tasks.filter(t => !t.done && t.category === c);
+  return [...sec("近期"), ...sec("日常"), ...sec("兴趣")];
+}
+
+function moveTask(t, dir) {
+  // 只在同一区内挪：找到本区可见任务里的上/下一个，交换两者在tasks数组里的位置
+  const section = tasks.filter(x => !x.done && x.category === t.category);
+  const neighbor = section[section.indexOf(t) + dir];
+  if (!neighbor) return;   // 已经在区顶/区底
+  const i = tasks.indexOf(t), j = tasks.indexOf(neighbor);
+  [tasks[i], tasks[j]] = [tasks[j], tasks[i]];
+  save();
+  render();
 }
 
 function checkIn(t) {
@@ -234,12 +267,64 @@ function flash(msg) {
   flashTimer = setTimeout(() => el.style.display = "none", 2500);
 }
 
-function taskCard(t, mark) {
+const expandedSubs = new Set();   // 记住哪些任务的步骤面板展开着（只在本次打开期间有效）
+
+function subsPanel(t) {
+  const panel = document.createElement("div");
+  panel.className = "subs";
+
+  t.subs.forEach((s, i) => {
+    const line = document.createElement("div");
+    line.className = "sub-line";
+
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = s.done;
+    box.onchange = () => { s.done = box.checked; save(); render(); };
+
+    const name = document.createElement("span");
+    name.className = "sub-name" + (s.done ? " sub-done" : "");
+    name.textContent = s.name;
+
+    const del = document.createElement("button");
+    del.textContent = "✕";
+    del.onclick = () => { t.subs.splice(i, 1); save(); render(); };
+
+    line.append(box, name, del);
+    panel.append(line);
+  });
+
+  const addRow = document.createElement("div");
+  addRow.className = "sub-add";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.placeholder = "拆一小步，越小越容易开始…";
+  const addBtn = document.createElement("button");
+  addBtn.textContent = "添加";
+  const submit = () => {
+    const name = input.value.trim();
+    if (!name) return;
+    t.subs.push({ name, done: false });
+    save(); render();
+  };
+  addBtn.onclick = submit;
+  input.addEventListener("keydown", e => { if (e.key === "Enter") submit(); });
+  addRow.append(input, addBtn);
+  panel.append(addRow);
+
+  return panel;
+}
+
+function taskCard(t) {
   const card = document.createElement("div");
   card.className = "card";
 
+  const row = document.createElement("div");
+  row.className = "row";
+
   const info = document.createElement("div");
   info.className = "info";
+  const mark = (t.category === "近期" && t.priority === 1) ? "🎯 " : "";
   const fire = (t.streak >= 2 && t.last_full === yesterdayStr())
     ? ` <span class="fire">🔥${t.streak}天连击中</span>` : "";
   info.innerHTML = `<span class="name"></span>${fire}`;
@@ -250,12 +335,47 @@ function taskCard(t, mark) {
       <div class="track"><div class="fill" style="width:${doneTimes / t.times * 100}%"></div></div>
       <div class="count">${doneTimes}/${t.times}</div>`;
   }
+  // 近期任务：永远只把"下一步"顶在脸上，别让大脑面对整座山
+  if (t.category === "近期" && t.subs.length) {
+    const next = t.subs.find(s => !s.done);
+    const nextDiv = document.createElement("div");
+    nextDiv.className = "next-step";
+    nextDiv.textContent = next ? `▸ 下一步：${next.name}` : "▸ 步骤全部完成，可以打卡收尾了 ✨";
+    info.append(nextDiv);
+  }
 
   const btn = document.createElement("button");
   btn.className = "primary";
   btn.textContent = "打卡";
   btn.onclick = () => checkIn(t);
 
+  row.append(info, btn);
+
+  // 小操作行：排序、步骤、放弃
+  const actions = document.createElement("div");
+  actions.className = "actions";
+
+  const up = document.createElement("button");
+  up.textContent = "↑";
+  up.onclick = () => moveTask(t, -1);
+  const down = document.createElement("button");
+  down.textContent = "↓";
+  down.onclick = () => moveTask(t, +1);
+  actions.append(up, down);
+
+  if (t.category === "近期") {
+    const stepsBtn = document.createElement("button");
+    const doneN = t.subs.filter(s => s.done).length;
+    stepsBtn.textContent = t.subs.length ? `📝 步骤 ${doneN}/${t.subs.length}` : "＋ 分解步骤";
+    stepsBtn.onclick = () => {
+      expandedSubs.has(t) ? expandedSubs.delete(t) : expandedSubs.add(t);
+      render();
+    };
+    actions.append(stepsBtn);
+  }
+
+  const spacer = document.createElement("div");
+  spacer.className = "spacer";
   const drop = document.createElement("button");
   drop.textContent = "🗑";
   drop.onclick = () => {
@@ -265,17 +385,27 @@ function taskCard(t, mark) {
       flash(`🗑 已放弃：${t.name}。放弃也是决策，给大脑腾地方 👍`);
     }
   };
+  actions.append(spacer, drop);
 
-  card.append(info, btn, drop);
+  card.append(row, actions);
+  if (expandedSubs.has(t)) card.append(subsPanel(t));
   return card;
+}
+
+function section(main, title, list) {
+  const h = document.createElement("h2");
+  h.textContent = title;
+  main.append(h);
+  list.forEach(t => main.append(taskCard(t)));
 }
 
 function render() {
   const main = document.getElementById("main");
   main.innerHTML = "";
   const vis = visibleTasks();
+  const recent = vis.filter(t => t.category === "近期");
   const daily = vis.filter(t => t.category === "日常");
-  const other = vis.filter(t => t.category !== "日常");
+  const interest = vis.filter(t => t.category === "兴趣");
   const dailyDone = tasks.filter(t => t.done && t.category === "日常");
 
   document.getElementById("pickBtn").disabled = vis.length === 0;
@@ -287,11 +417,11 @@ function render() {
     main.append(div);
   }
 
+  // 三区顺序：近期推进 → 今日日常 → 兴趣探索
+  if (recent.length) section(main, "📌 近期推进", recent);
+
   if (daily.length || dailyDone.length) {
-    const h = document.createElement("h2");
-    h.textContent = `💙 今日日常（还剩${daily.length}件）`;
-    main.append(h);
-    daily.forEach(t => main.append(taskCard(t, "")));
+    section(main, `💙 今日日常（还剩${daily.length}件）`, daily);
     for (const t of dailyDone) {
       const line = document.createElement("div");
       line.className = "done-line";
@@ -302,15 +432,7 @@ function render() {
     }
   }
 
-  if (other.length) {
-    const h = document.createElement("h2");
-    h.textContent = "📌 近期 & 💡 兴趣";
-    main.append(h);
-    for (const t of other) {
-      const mark = t.priority === 1 ? "🎯 " : (t.category === "兴趣" ? "💡 " : "");
-      main.append(taskCard(t, mark));
-    }
-  }
+  if (interest.length) section(main, "💡 兴趣 & 探索", interest);
 }
 
 // ---------- 🎲 现在干嘛 ----------
@@ -350,6 +472,7 @@ document.getElementById("addForm").addEventListener("submit", e => {
     priority: parseInt(document.getElementById("fPriority").value),
     times, left: times, done: false,
     last_done: "", streak: 0, last_full: "",
+    subs: [],
   });
   save(); render();
   flash(`✅ 已添加到【${category}】：${name}`);
@@ -446,7 +569,22 @@ function renderSyncPanel() {
 
 document.getElementById("syncEnable").onclick = () => {
   let url = document.getElementById("syncInput").value.trim().replace(/\/+$/, "");
-  if (!url.startsWith("http")) { flash("❌ 网址格式不对"); return; }
+  // 设置类的错误用弹窗提示：闪一下的flash容易被错过，显得"点了没反应"
+  if (!url) {
+    alert("输入框是空的：请先粘贴数据库网址（或另一台设备的同步码）再点启用。");
+    return;
+  }
+  if (url.includes("console.firebase.google.com")) {
+    alert("你粘贴的是Firebase控制台页面的网址，不是数据库网址。\n\n" +
+          "请在控制台里进入：构建 → Realtime Database → 数据 标签，\n" +
+          "复制页面顶部形如\nhttps://xxx-default-rtdb.xxx.firebasedatabase.app\n的那个网址。");
+    return;
+  }
+  if (!/^https?:\/\//.test(url)) url = "https://" + url;   // 没带https://就帮忙补上
+  if (!url.includes(".")) {
+    alert("网址看起来不完整，检查一下是否复制全了。");
+    return;
+  }
   if (!url.endsWith(".json")) {
     // 首次设置：在数据库网址后面拼一段随机秘密路径，这就是"密码"
     // （crypto.randomUUID只在https/localhost下有，file://双击打开时退回Math.random拼一串）
