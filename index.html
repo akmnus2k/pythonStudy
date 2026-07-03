@@ -132,6 +132,24 @@
   <input type="file" id="importFile" accept=".json" hidden>
 </footer>
 
+<details id="syncBox">
+  <summary>☁ 云同步 <span id="syncState" class="fire"></span></summary>
+  <div id="syncOff">
+    <p style="font-size:0.9rem">首次设置：粘贴你的 Firebase 数据库网址。<br>
+       其他设备：粘贴第一台设备上生成的同步码。</p>
+    <input type="text" id="syncInput" placeholder="https://xxx.firebasedatabase.app 或同步码" autocomplete="off">
+    <br><br>
+    <button id="syncEnable" class="primary big">启用同步</button>
+  </div>
+  <div id="syncOn" style="display:none">
+    <p style="font-size:0.9rem">同步码（在手机等其他设备的云同步里粘贴它）：</p>
+    <input type="text" id="syncCode" readonly>
+    <br><br>
+    <button id="syncCopy">📋 复制同步码</button>
+    <button id="syncDisable">断开同步</button>
+  </div>
+</details>
+
 <script>
 "use strict";
 const KEY = "adhd_tasks_v1";
@@ -145,8 +163,20 @@ const todayStr = () => dateStr(new Date());
 const yesterdayStr = () => dateStr(new Date(Date.now() - 864e5));
 
 // ---------- 数据（与Python版tasks.json字段完全一致，可互相导入导出） ----------
+const META_KEY = "adhd_updated_at";   // 本地数据的最后修改时间，云同步靠它比新旧
+const SYNC_KEY = "adhd_sync_url";     // 同步码（含随机秘密路径的云端网址）
+
 const load = () => JSON.parse(localStorage.getItem(KEY) || "[]");
-const save = () => localStorage.setItem(KEY, JSON.stringify(tasks));
+const getUpdatedAt = () => parseInt(localStorage.getItem(META_KEY) || "0");
+
+let pushTimer;
+const save = () => {
+  localStorage.setItem(KEY, JSON.stringify(tasks));
+  localStorage.setItem(META_KEY, String(Date.now()));
+  // 稍微攒一下再推云端：连点8次打卡只发一次请求
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(pushCloud, 400);
+};
 
 function fixOldTasks(list) {
   for (const t of list) {
@@ -359,12 +389,123 @@ document.getElementById("importFile").addEventListener("change", e => {
   e.target.value = "";
 });
 
+// ---------- ☁ 云同步 ----------
+// 原理：云端只存一份 {updated_at, tasks}，谁的时间戳新听谁的（last-write-wins）。
+// 打开页面/切回页面时拉取；每次本地改动后推送。断网也能用，联网后自动补推。
+let syncUrl = localStorage.getItem(SYNC_KEY) || "";
+
+function setSyncState(txt) {
+  document.getElementById("syncState").textContent = txt;
+}
+const syncOK = () => setSyncState(
+  `已同步 ${new Date().toTimeString().slice(0, 5)}`);
+const syncFail = () => setSyncState("⚠ 连不上云端（数据仍在本地）");
+
+async function pushCloud() {
+  if (!syncUrl) return;
+  try {
+    const res = await fetch(syncUrl, {
+      method: "PUT",
+      body: JSON.stringify({ updated_at: getUpdatedAt(), tasks }),
+    });
+    if (!res.ok) throw 0;
+    syncOK();
+  } catch { syncFail(); }
+}
+
+async function pullCloud() {
+  if (!syncUrl) return;
+  try {
+    const res = await fetch(syncUrl);
+    if (!res.ok) throw 0;
+    const doc = await res.json();
+    if (doc && Array.isArray(doc.tasks) && doc.updated_at > getUpdatedAt()) {
+      // 云端更新：整份采用，并按今天的日期做日常重置
+      tasks = doc.tasks;
+      localStorage.setItem(KEY, JSON.stringify(tasks));
+      localStorage.setItem(META_KEY, String(doc.updated_at));
+      const before = JSON.stringify(tasks);
+      fixOldTasks(tasks);
+      resetDailyTasks(tasks);
+      if (JSON.stringify(tasks) !== before) save();   // 重置产生了变化才算新改动
+      render();
+    } else if (!doc || (doc.updated_at || 0) < getUpdatedAt()) {
+      pushCloud();   // 云端是空的或更旧：把本地推上去
+    }
+    syncOK();
+  } catch { syncFail(); }
+}
+
+function renderSyncPanel() {
+  const on = !!syncUrl;
+  document.getElementById("syncOff").style.display = on ? "none" : "";
+  document.getElementById("syncOn").style.display = on ? "" : "none";
+  document.getElementById("syncCode").value = syncUrl;
+  if (!on) setSyncState("未开启");
+}
+
+document.getElementById("syncEnable").onclick = () => {
+  let url = document.getElementById("syncInput").value.trim().replace(/\/+$/, "");
+  if (!url.startsWith("http")) { flash("❌ 网址格式不对"); return; }
+  if (!url.endsWith(".json")) {
+    // 首次设置：在数据库网址后面拼一段随机秘密路径，这就是"密码"
+    // （crypto.randomUUID只在https/localhost下有，file://双击打开时退回Math.random拼一串）
+    const secret = crypto.randomUUID ? crypto.randomUUID() :
+      Array.from({ length: 32 },
+        () => "abcdefghijklmnopqrstuvwxyz0123456789"[Math.floor(Math.random() * 36)]).join("");
+    url = `${url}/tasks/${secret}.json`;
+  }
+  syncUrl = url;
+  localStorage.setItem(SYNC_KEY, url);
+  renderSyncPanel();
+  pullCloud();   // 云端有数据就拉下来（其他设备加入），没有就把本地推上去（首次）
+  flash("☁ 同步已启用");
+};
+
+document.getElementById("syncDisable").onclick = () => {
+  if (!confirm("断开云同步？本地数据保留，云端数据也不会删。")) return;
+  syncUrl = "";
+  localStorage.removeItem(SYNC_KEY);
+  renderSyncPanel();
+  flash("已断开同步，数据只存在本设备");
+};
+
+document.getElementById("syncCopy").onclick = async () => {
+  const el = document.getElementById("syncCode");
+  try {
+    await navigator.clipboard.writeText(el.value);
+    flash("📋 已复制，去另一台设备粘贴吧");
+  } catch {
+    el.select();   // 剪贴板API不可用时（如file://打开），退回手动复制
+    flash("请按 Ctrl+C 复制选中的同步码");
+  }
+};
+
+// 切回这个页面时拉一次云端（最多30秒一次），保证两台设备轮流用时数据是新的
+let lastPull = 0;
+function pullIfStale() {
+  if (Date.now() - lastPull > 30000) {
+    lastPull = Date.now();
+    pullCloud();
+  }
+}
+window.addEventListener("focus", pullIfStale);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) pullIfStale();
+});
+
 // ---------- 启动 ----------
 let tasks = load();
-fixOldTasks(tasks);
-resetDailyTasks(tasks);
-save();
+{
+  // 只有fix/重置真的改了数据才标记"本地更新"，否则新设备会误以为自己比云端新
+  const before = JSON.stringify(tasks);
+  fixOldTasks(tasks);
+  resetDailyTasks(tasks);
+  if (JSON.stringify(tasks) !== before) save();
+}
 render();
+renderSyncPanel();
+if (syncUrl) { lastPull = Date.now(); pullCloud(); }
 </script>
 </body>
 </html>
