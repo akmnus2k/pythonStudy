@@ -1,0 +1,6 @@
+# Streamlit 主题：浅蓝系、低饱和，避免任何冲击性强的颜色
+[theme]
+primaryColor = "#A8D4EA"              # 主色（按钮、进度条、选中态）：浅蓝
+backgroundColor = "#F7FBFD"           # 页面底色：近白的淡蓝
+secondaryBackgroundColor = "#E9F3F8"  # 侧边栏和输入框底色：稍深一点的淡蓝
+textColor = "#3D4F5C"                 # 文字：柔和的蓝灰，不用纯黑
