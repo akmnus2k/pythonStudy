@@ -1,0 +1,9 @@
+# 机密文件，永不上传
+.streamlit/secrets.toml
+
+# 个人任务数据
+tasks.json
+tasks.json.bak
+
+# PyCharm配置
+.idea/
