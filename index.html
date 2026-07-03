@@ -72,8 +72,16 @@
   .fill { background: var(--primary); height: 100%; border-radius: 6px; transition: width 0.3s; }
   .count { font-size: 0.8rem; color: var(--muted); margin-top: 4px; }
 
-  .done-line { color: var(--muted); padding: 4px 2px; }
+  .done-line { color: var(--muted); padding: 4px 2px; cursor: pointer; }
   .done-line s { margin-right: 6px; }
+  .due { font-size: 0.8rem; color: var(--muted); margin-left: 6px; }
+
+  /* 列表内的折叠组（已完成/兴趣区），比设置类details轻量 */
+  details.fold { margin: 4px 0 10px; padding: 8px 12px; }
+  details.fold > summary { color: var(--muted); font-size: 0.9rem; font-weight: normal; }
+  details.fold.section > summary {
+    color: var(--text-strong); font-size: 1.05rem; font-weight: 600;
+  }
 
   #flash {
     position: sticky; top: 8px; z-index: 10;
@@ -145,6 +153,10 @@
       <label>每天几次（喝水这类填多次）</label>
       <input type="number" id="fTimes" min="1" max="50" value="8">
     </div>
+    <div id="dueWrap" style="display:none">
+      <label>倒计时天数（可不填）</label>
+      <input type="number" id="fDue" min="0" max="365">
+    </div>
     <br>
     <button type="submit" class="primary big">添加</button>
   </form>
@@ -192,6 +204,10 @@ const dateStr = d => {
 };
 const todayStr = () => dateStr(new Date());
 const yesterdayStr = () => dateStr(new Date(Date.now() - 864e5));
+const dateAfterDays = n => dateStr(new Date(Date.now() + n * 864e5));
+// 到期日还差几天：正=还剩，0=今天到期，负=已超期
+const daysUntil = due =>
+  Math.round((new Date(due + "T00:00:00") - new Date(todayStr() + "T00:00:00")) / 864e5);
 
 // ---------- 数据（与Python版tasks.json字段完全一致，可互相导入导出） ----------
 const META_KEY = "adhd_updated_at";   // 本地数据的最后修改时间，云同步靠它比新旧
@@ -217,7 +233,8 @@ function fixOldTasks(list) {
     if (t.left === undefined) t.left = t.done ? 0 : 1;
     if (t.streak === undefined) t.streak = 0;
     if (t.last_full === undefined) t.last_full = "";
-    if (t.subs === undefined) t.subs = [];   // 分解步骤 [{name, done}]
+    if (t.subs === undefined) t.subs = [];   // 备注/分解步骤 [{name, done}]
+    if (t.due === undefined) t.due = "";     // 近期任务的到期日（倒计时）
   }
 }
 
@@ -339,6 +356,14 @@ function taskCard(t) {
     ? ` <span class="fire">🔥${t.streak}天连击中</span>` : "";
   info.innerHTML = `<span class="name"></span>${fire}`;
   info.querySelector(".name").textContent = `${mark}${t.name}`;
+  // 近期任务的倒计时（中性灰色小字，超期也不用红色吓人）
+  if (t.category === "近期" && t.due) {
+    const d = daysUntil(t.due);
+    const due = document.createElement("span");
+    due.className = "due";
+    due.textContent = d > 0 ? `⏳还剩${d}天` : (d === 0 ? "⏳今天到期" : `已超${-d}天`);
+    info.querySelector(".name").after(due);
+  }
   if (t.times > 1) {
     const doneTimes = t.times - t.left;
     info.innerHTML += `
@@ -423,6 +448,25 @@ function editPanel(t) {
     post.textContent = "次";
     optRow.append(pre, timesInput, post);
   }
+
+  if (t.category === "近期") {
+    const pre = document.createElement("span");
+    pre.textContent = "倒计时";
+    const dueInput = document.createElement("input");
+    dueInput.type = "number";
+    dueInput.min = 0;
+    dueInput.max = 365;
+    dueInput.placeholder = "不限";
+    if (t.due) dueInput.value = daysUntil(t.due);
+    dueInput.onchange = () => {
+      const raw = dueInput.value;
+      t.due = raw === "" ? "" : dateAfterDays(Math.max(0, parseInt(raw) || 0));
+      save(); render();
+    };
+    const post = document.createElement("span");
+    post.textContent = "天（清空=不限）";
+    optRow.append(pre, dueInput, post);
+  }
   panel.append(optRow);
 
   // 备注清单
@@ -461,6 +505,44 @@ function section(main, title, list) {
   list.forEach(t => main.append(taskCard(t)));
 }
 
+function restoreTask(t) {
+  // 点已完成的任务 = 撤销最后一次打卡
+  t.done = false;
+  if (t.left <= 0) t.left = 1;
+  if (t.category === "日常" && t.last_full === todayStr()) {
+    // 今天刚给的连击也一并撤回；streak-1>0说明昨天做满过，last_full回到昨天正好
+    t.streak = Math.max(t.streak - 1, 0);
+    t.last_full = t.streak > 0 ? yesterdayStr() : "";
+  }
+  save(); render();
+  flash(`↩ 已还原：${t.name}`);
+}
+
+function doneLine(t) {
+  const line = document.createElement("div");
+  line.className = "done-line";
+  line.title = "点击还原";
+  const fire = (t.category === "日常" && t.streak >= 2) ? ` 🔥×${t.streak}` : "";
+  line.innerHTML = `✅ <s></s>${fire}`;
+  line.querySelector("s").textContent = t.name;
+  line.onclick = () => restoreTask(t);
+  return line;
+}
+
+// 折叠组的开合状态（只在本次打开期间记住，刷新后回到默认收起）
+const ui = { recentDoneOpen: false, interestOpen: false };
+
+function fold(title, cls, openKey) {
+  const det = document.createElement("details");
+  det.className = cls;
+  det.open = ui[openKey];
+  const sum = document.createElement("summary");
+  sum.textContent = title;
+  det.append(sum);
+  det.addEventListener("toggle", () => { ui[openKey] = det.open; });
+  return det;
+}
+
 function render() {
   const main = document.getElementById("main");
   main.innerHTML = "";
@@ -469,6 +551,7 @@ function render() {
   const daily = vis.filter(t => t.category === "日常");
   const interest = vis.filter(t => t.category === "兴趣");
   const dailyDone = tasks.filter(t => t.done && t.category === "日常");
+  const recentDone = tasks.filter(t => t.done && t.category === "近期");
 
   document.getElementById("pickBtn").disabled = vis.length === 0;
 
@@ -480,21 +563,26 @@ function render() {
   }
 
   // 三区顺序：近期推进 → 今日日常 → 兴趣探索
-  if (recent.length) section(main, "📌 近期推进", recent);
-
-  if (daily.length || dailyDone.length) {
-    section(main, `💙 今日日常（还剩${daily.length}件）`, daily);
-    for (const t of dailyDone) {
-      const line = document.createElement("div");
-      line.className = "done-line";
-      const fire = t.streak >= 2 ? ` 🔥×${t.streak}` : "";
-      line.innerHTML = `✅ <s></s>${fire}`;
-      line.querySelector("s").textContent = t.name;
-      main.append(line);
+  if (recent.length || recentDone.length) {
+    section(main, "📌 近期推进", recent);
+    if (recentDone.length) {
+      const det = fold(`✅ 已完成（${recentDone.length}）`, "fold", "recentDoneOpen");
+      recentDone.forEach(t => det.append(doneLine(t)));
+      main.append(det);
     }
   }
 
-  if (interest.length) section(main, "💡 兴趣 & 探索", interest);
+  if (daily.length || dailyDone.length) {
+    section(main, `💙 今日日常（还剩${daily.length}件）`, daily);
+    dailyDone.forEach(t => main.append(doneLine(t)));
+  }
+
+  // 兴趣区默认折叠：闲暇时才需要打开看
+  if (interest.length) {
+    const det = fold(`💡 兴趣 & 探索（${interest.length}）`, "fold section", "interestOpen");
+    interest.forEach(t => det.append(taskCard(t)));
+    main.append(det);
+  }
 }
 
 // ---------- 🎲 现在干嘛 ----------
@@ -520,6 +608,7 @@ document.getElementById("pickCheckin").onclick = () => {
 document.getElementById("catRow").addEventListener("change", () => {
   const cat = document.querySelector('input[name="cat"]:checked').value;
   document.getElementById("timesWrap").style.display = cat === "日常" ? "" : "none";
+  document.getElementById("dueWrap").style.display = cat === "近期" ? "" : "none";
 });
 document.getElementById("addForm").addEventListener("submit", e => {
   e.preventDefault();
@@ -528,13 +617,17 @@ document.getElementById("addForm").addEventListener("submit", e => {
   const category = document.querySelector('input[name="cat"]:checked').value;
   const times = category === "日常"
     ? Math.max(1, parseInt(document.getElementById("fTimes").value) || 8) : 1;
+  const dueRaw = document.getElementById("fDue").value;
+  const due = (category === "近期" && dueRaw !== "")
+    ? dateAfterDays(Math.max(0, parseInt(dueRaw) || 0)) : "";
   tasks.push({
     name, category,
     priority: parseInt(document.getElementById("fPriority").value),
     times, left: times, done: false,
     last_done: "", streak: 0, last_full: "",
-    subs: [],
+    subs: [], due,
   });
+  document.getElementById("fDue").value = "";
   save(); render();
   flash(`✅ 已添加到【${category}】：${name}`);
   document.getElementById("fName").value = "";
