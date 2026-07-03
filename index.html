@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>📋 我的任务清单</title>
+<title>📋 待办清单</title>
 <style>
   /* 浅蓝低饱和主题 */
   :root {
@@ -43,15 +43,19 @@
   .card .info { flex: 1; min-width: 0; }
   .next-step { font-size: 0.85rem; color: var(--muted); margin-top: 2px; }
 
-  /* 控制钮全部收进一行：↑↓叠成小竖排，备注/放弃是无底色小图标 */
-  .ctrls { display: flex; align-items: center; gap: 4px; }
-  .updown { display: flex; flex-direction: column; gap: 2px; }
-  .updown button {
-    padding: 0 7px; font-size: 0.6rem; line-height: 1.5;
-    color: var(--muted); background: var(--bg); border: 1px solid var(--soft);
+  /* 外层只有 任务信息+打卡；点任务展开内层编辑面板 */
+  .card .info { cursor: pointer; }
+  .edit-row { display: flex; gap: 8px; margin-top: 8px; align-items: center; font-size: 0.9rem; }
+  .edit-row input[type=text] { flex: 1; }
+  .edit-row select { padding: 8px; border: 1px solid var(--soft); border-radius: 8px;
+                     background: var(--bg); color: var(--text); font-size: 0.95rem; }
+  .edit-row input[type=number] { width: 70px; padding: 8px; }
+  .panel-actions { display: flex; gap: 6px; margin-top: 10px; align-items: center; }
+  .panel-actions .spacer { flex: 1; }
+  .panel-actions button {
+    font-size: 0.85rem; color: var(--muted);
+    background: var(--bg); border: 1px solid var(--soft);
   }
-  .icon-btn { background: none; color: var(--muted); padding: 4px 5px; font-size: 0.85rem; }
-  .ctrls .primary { padding: 8px 12px; }
 
   .subs { margin-top: 8px; border-top: 1px solid var(--soft); padding-top: 8px; }
   .sub-line { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 0.92rem; }
@@ -110,7 +114,7 @@
 <body>
 
 <div id="flash"></div>
-<h1>📋 我的任务清单</h1>
+<h1>📋 待办清单</h1>
 
 <button id="pickBtn" class="primary big">🎲 现在干嘛？</button>
 <div id="pickBox">
@@ -350,39 +354,11 @@ function taskCard(t) {
     info.append(nextDiv);
   }
 
-  // 控制钮收进同一行：[↑↓] [📝] [🗑] [打卡]
-  const ctrls = document.createElement("div");
-  ctrls.className = "ctrls";
-
-  const updown = document.createElement("div");
-  updown.className = "updown";
-  const up = document.createElement("button");
-  up.textContent = "▲";
-  up.onclick = () => moveTask(t, -1);
-  const down = document.createElement("button");
-  down.textContent = "▼";
-  down.onclick = () => moveTask(t, +1);
-  updown.append(up, down);
-
-  const noteBtn = document.createElement("button");
-  noteBtn.className = "icon-btn";
-  noteBtn.title = "备注";
-  noteBtn.textContent = t.subs.length ? `📝${t.subs.length}` : "📝";
-  noteBtn.onclick = () => {
+  // 点任务本身 = 展开/收起内层编辑面板
+  info.title = "点击编辑";
+  info.onclick = () => {
     expandedSubs.has(t) ? expandedSubs.delete(t) : expandedSubs.add(t);
     render();
-  };
-
-  const drop = document.createElement("button");
-  drop.className = "icon-btn";
-  drop.title = "放弃";
-  drop.textContent = "🗑";
-  drop.onclick = () => {
-    if (confirm(`确定放弃「${t.name}」？`)) {
-      tasks.splice(tasks.indexOf(t), 1);
-      save(); render();
-      flash(`🗑 已放弃：${t.name}。放弃也是决策，给大脑腾地方 👍`);
-    }
   };
 
   const btn = document.createElement("button");
@@ -390,12 +366,92 @@ function taskCard(t) {
   btn.textContent = "打卡";
   btn.onclick = () => checkIn(t);
 
-  ctrls.append(updown, noteBtn, drop, btn);
-  row.append(info, ctrls);
-
+  row.append(info, btn);
   card.append(row);
-  if (expandedSubs.has(t)) card.append(subsPanel(t));
+  if (expandedSubs.has(t)) card.append(editPanel(t));
   return card;
+}
+
+function editPanel(t) {
+  const panel = document.createElement("div");
+  panel.className = "subs";
+
+  // 名称：改完按回车或点别处，自动保存
+  const nameRow = document.createElement("div");
+  nameRow.className = "edit-row";
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.value = t.name;
+  nameInput.onchange = () => {
+    const v = nameInput.value.trim();
+    if (v && v !== t.name) { t.name = v; save(); render(); }
+  };
+  nameInput.addEventListener("keydown", e => { if (e.key === "Enter") nameInput.blur(); });
+  nameRow.append(nameInput);
+  panel.append(nameRow);
+
+  // 类别 + 每天次数
+  const optRow = document.createElement("div");
+  optRow.className = "edit-row";
+  const catSel = document.createElement("select");
+  for (const c of ["日常", "近期", "兴趣"]) {
+    const o = document.createElement("option");
+    o.value = o.textContent = c;
+    if (c === t.category) o.selected = true;
+    catSel.append(o);
+  }
+  catSel.onchange = () => { t.category = catSel.value; save(); render(); };
+  optRow.append(catSel);
+
+  if (t.category === "日常") {
+    const pre = document.createElement("span");
+    pre.textContent = "每天";
+    const timesInput = document.createElement("input");
+    timesInput.type = "number";
+    timesInput.min = 1;
+    timesInput.max = 50;
+    timesInput.value = t.times;
+    timesInput.onchange = () => {
+      const n = Math.max(1, parseInt(timesInput.value) || t.times);
+      const doneTimes = t.times - t.left;      // 今天已做的次数不作废
+      t.times = n;
+      t.left = Math.max(n - doneTimes, 0);
+      if (t.left === 0) t.done = true;
+      save(); render();
+    };
+    const post = document.createElement("span");
+    post.textContent = "次";
+    optRow.append(pre, timesInput, post);
+  }
+  panel.append(optRow);
+
+  // 备注清单
+  panel.append(subsPanel(t));
+
+  // 排序、放弃
+  const actions = document.createElement("div");
+  actions.className = "panel-actions";
+  const up = document.createElement("button");
+  up.textContent = "▲ 上移";
+  up.onclick = () => moveTask(t, -1);
+  const down = document.createElement("button");
+  down.textContent = "▼ 下移";
+  down.onclick = () => moveTask(t, +1);
+  const spacer = document.createElement("div");
+  spacer.className = "spacer";
+  const drop = document.createElement("button");
+  drop.textContent = "🗑 放弃";
+  drop.onclick = () => {
+    if (confirm(`确定放弃「${t.name}」？`)) {
+      tasks.splice(tasks.indexOf(t), 1);
+      save(); render();
+      flash(`🗑 已放弃：${t.name}。放弃也是决策，给大脑腾地方 👍`);
+    }
+  };
+  actions.append(up, down, spacer, drop);
+  panel.append(actions);
+
+  return panel;
 }
 
 function section(main, title, list) {
