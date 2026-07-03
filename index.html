@@ -114,15 +114,24 @@
   .radio-row input:checked + span { font-weight: 700; }
   .radio-row label:has(input:checked) { background: var(--primary); color: var(--text-strong); }
 
-  footer { margin-top: 24px; display: flex; gap: 8px; }
-  footer button { flex: 1; font-size: 0.85rem; color: var(--muted); }
+  h1 { cursor: pointer; }
+  h1 input {
+    font: inherit; color: var(--text-strong); width: 60%;
+    border: none; border-bottom: 2px solid var(--primary);
+    background: transparent; outline: none; padding: 0;
+  }
+  .data-row {
+    display: flex; gap: 8px; margin-top: 12px;
+    border-top: 1px solid var(--soft); padding-top: 10px;
+  }
+  .data-row button { flex: 1; font-size: 0.85rem; color: var(--muted); }
   .empty { text-align: center; padding: 30px 0; color: var(--muted); font-size: 1.1rem; }
 </style>
 </head>
 <body>
 
 <div id="flash"></div>
-<h1>📋 待办清单</h1>
+<h1 id="pageTitle" title="点击修改名称">📋 待办清单</h1>
 
 <button id="pickBtn" class="primary big">🎲 现在干嘛？</button>
 <div id="pickBox">
@@ -162,12 +171,6 @@
   </form>
 </details>
 
-<footer>
-  <button id="exportBtn">⬇ 导出数据</button>
-  <button id="importBtn">⬆ 导入数据</button>
-  <input type="file" id="importFile" accept=".json" hidden>
-</footer>
-
 <details id="syncBox">
   <summary>☁ 云同步 <span id="syncState" class="fire"></span></summary>
   <div id="syncOff">
@@ -183,6 +186,11 @@
     <br><br>
     <button id="syncCopy">📋 复制同步码</button>
     <button id="syncDisable">断开同步</button>
+  </div>
+  <div class="data-row">
+    <button id="exportBtn">⬇ 导出数据</button>
+    <button id="importBtn">⬆ 导入数据</button>
+    <input type="file" id="importFile" accept=".json" hidden>
   </div>
 </details>
 
@@ -212,6 +220,8 @@ const daysUntil = due =>
 // ---------- 数据（与Python版tasks.json字段完全一致，可互相导入导出） ----------
 const META_KEY = "adhd_updated_at";   // 本地数据的最后修改时间，云同步靠它比新旧
 const SYNC_KEY = "adhd_sync_url";     // 同步码（含随机秘密路径的云端网址）
+const TITLE_KEY = "adhd_title";       // 自定义清单名称
+const getTitle = () => localStorage.getItem(TITLE_KEY) || "待办清单";
 
 const load = () => JSON.parse(localStorage.getItem(KEY) || "[]");
 const getUpdatedAt = () => parseInt(localStorage.getItem(META_KEY) || "0");
@@ -293,6 +303,32 @@ function flash(msg) {
   clearTimeout(flashTimer);
   flashTimer = setTimeout(() => el.style.display = "none", 2500);
 }
+
+// ---------- 标题：点击自定义名称 ----------
+function renderTitle() {
+  const h1 = document.getElementById("pageTitle");
+  h1.textContent = `📋 ${getTitle()}`;
+  document.title = `📋 ${getTitle()}`;   // 浏览器标签页也跟着改
+}
+
+document.getElementById("pageTitle").onclick = () => {
+  const h1 = document.getElementById("pageTitle");
+  if (h1.querySelector("input")) return;   // 已经在编辑中
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = getTitle();
+  input.maxLength = 20;
+  h1.textContent = "📋 ";
+  h1.append(input);
+  input.focus();
+  input.select();
+  input.onblur = () => {
+    localStorage.setItem(TITLE_KEY, input.value.trim() || "待办清单");
+    save();          // 名称也走云同步，手机电脑保持一致
+    renderTitle();
+  };
+  input.addEventListener("keydown", e => { if (e.key === "Enter") input.blur(); });
+};
 
 const expandedSubs = new Set();   // 记住哪些任务的步骤面板展开着（只在本次打开期间有效）
 
@@ -683,7 +719,7 @@ async function pushCloud() {
   try {
     const res = await fetch(syncUrl, {
       method: "PUT",
-      body: JSON.stringify({ updated_at: getUpdatedAt(), tasks }),
+      body: JSON.stringify({ updated_at: getUpdatedAt(), tasks, title: getTitle() }),
     });
     if (!res.ok) throw 0;
     syncOK();
@@ -701,6 +737,7 @@ async function pullCloud() {
       tasks = doc.tasks;
       localStorage.setItem(KEY, JSON.stringify(tasks));
       localStorage.setItem(META_KEY, String(doc.updated_at));
+      if (doc.title) { localStorage.setItem(TITLE_KEY, doc.title); renderTitle(); }
       const before = JSON.stringify(tasks);
       fixOldTasks(tasks);
       resetDailyTasks(tasks);
@@ -795,6 +832,7 @@ let tasks = load();
   resetDailyTasks(tasks);
   if (JSON.stringify(tasks) !== before) save();
 }
+renderTitle();
 render();
 renderSyncPanel();
 if (syncUrl) { lastPull = Date.now(); pullCloud(); }
