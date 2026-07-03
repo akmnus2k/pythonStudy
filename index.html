@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>📋 我的任务清单</title>
+<style>
+  /* 浅蓝低饱和主题 */
+  :root {
+    --primary: #A8D4EA;
+    --primary-dark: #7FB5D4;
+    --bg: #F7FBFD;
+    --card: #FFFFFF;
+    --soft: #E9F3F8;
+    --text: #3D4F5C;
+    --text-strong: #2C4A5E;
+    --muted: #8AA3B2;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    max-width: 560px; margin-inline: auto;
+  }
+  h1 { font-size: 1.5rem; color: var(--text-strong); }
+  h2 { font-size: 1.05rem; margin: 20px 0 8px; color: var(--text-strong); }
+
+  button {
+    border: none; border-radius: 10px; cursor: pointer;
+    font-size: 0.95rem; color: var(--text-strong);
+    padding: 10px 14px; background: var(--soft);
+  }
+  button:active { transform: scale(0.98); }
+  .primary { background: var(--primary); font-weight: 600; }
+  .big { width: 100%; padding: 14px; font-size: 1.05rem; }
+
+  .card {
+    background: var(--card); border: 1px solid var(--soft);
+    border-radius: 12px; padding: 12px 14px; margin-bottom: 10px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .card .info { flex: 1; min-width: 0; }
+  .card .name { font-weight: 600; color: var(--text-strong); }
+  .fire { color: var(--muted); font-size: 0.85rem; }
+
+  .track { background: var(--soft); border-radius: 6px; height: 8px; margin-top: 8px; overflow: hidden; }
+  .fill { background: var(--primary); height: 100%; border-radius: 6px; transition: width 0.3s; }
+  .count { font-size: 0.8rem; color: var(--muted); margin-top: 4px; }
+
+  .done-line { color: var(--muted); padding: 4px 2px; }
+  .done-line s { margin-right: 6px; }
+
+  #flash {
+    position: sticky; top: 8px; z-index: 10;
+    background: var(--primary); color: var(--text-strong);
+    border-radius: 10px; padding: 10px 14px; margin-bottom: 12px;
+    display: none; font-weight: 500;
+  }
+  #pickBox {
+    background: var(--soft); border-radius: 12px; padding: 12px 14px;
+    margin: 10px 0; display: none; align-items: center; gap: 10px;
+  }
+  #pickBox .info { flex: 1; }
+
+  details {
+    background: var(--card); border: 1px solid var(--soft);
+    border-radius: 12px; padding: 12px 14px; margin-top: 20px;
+  }
+  summary { cursor: pointer; font-weight: 600; color: var(--text-strong); }
+  form label { display: block; margin: 10px 0 4px; font-size: 0.9rem; }
+  input[type=text], input[type=number], select {
+    width: 100%; padding: 10px; border: 1px solid var(--soft);
+    border-radius: 8px; background: var(--bg); color: var(--text); font-size: 1rem;
+  }
+  .radio-row { display: flex; gap: 8px; }
+  .radio-row label {
+    flex: 1; text-align: center; margin: 0; padding: 10px 0;
+    background: var(--bg); border: 1px solid var(--soft); border-radius: 8px; cursor: pointer;
+  }
+  .radio-row input { display: none; }
+  .radio-row input:checked + span { font-weight: 700; }
+  .radio-row label:has(input:checked) { background: var(--primary); color: var(--text-strong); }
+
+  footer { margin-top: 24px; display: flex; gap: 8px; }
+  footer button { flex: 1; font-size: 0.85rem; color: var(--muted); }
+  .empty { text-align: center; padding: 30px 0; color: var(--muted); font-size: 1.1rem; }
+</style>
+</head>
+<body>
+
+<div id="flash"></div>
+<h1>📋 我的任务清单</h1>
+
+<button id="pickBtn" class="primary big">🎲 现在干嘛？</button>
+<div id="pickBox">
+  <div class="info">🎲 就它了 → <b id="pickName"></b></div>
+  <button id="pickCheckin" class="primary">✅ 打卡</button>
+</div>
+
+<div id="main"></div>
+
+<details id="addBox">
+  <summary>➕ 添加任务</summary>
+  <form id="addForm">
+    <label>任务名称</label>
+    <input type="text" id="fName" autocomplete="off">
+    <label>类别</label>
+    <div class="radio-row" id="catRow">
+      <label><input type="radio" name="cat" value="日常" checked><span>日常</span></label>
+      <label><input type="radio" name="cat" value="近期"><span>近期</span></label>
+      <label><input type="radio" name="cat" value="兴趣"><span>兴趣</span></label>
+    </div>
+    <label>优先级</label>
+    <select id="fPriority">
+      <option value="1">优先</option>
+      <option value="2" selected>普通</option>
+      <option value="3">可推迟</option>
+    </select>
+    <div id="timesWrap">
+      <label>每天几次（喝水这类填多次）</label>
+      <input type="number" id="fTimes" min="1" max="50" value="8">
+    </div>
+    <br>
+    <button type="submit" class="primary big">添加</button>
+  </form>
+</details>
+
+<footer>
+  <button id="exportBtn">⬇ 导出数据</button>
+  <button id="importBtn">⬆ 导入数据</button>
+  <input type="file" id="importFile" accept=".json" hidden>
+</footer>
+
+<script>
+"use strict";
+const KEY = "adhd_tasks_v1";
+
+// ---------- 日期（用本地时间，不能用toISOString——那是UTC，晚上8点后会差一天） ----------
+const dateStr = d => {
+  const p = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+};
+const todayStr = () => dateStr(new Date());
+const yesterdayStr = () => dateStr(new Date(Date.now() - 864e5));
+
+// ---------- 数据（与Python版tasks.json字段完全一致，可互相导入导出） ----------
+const load = () => JSON.parse(localStorage.getItem(KEY) || "[]");
+const save = () => localStorage.setItem(KEY, JSON.stringify(tasks));
+
+function fixOldTasks(list) {
+  for (const t of list) {
+    t.last_done ??= "";
+    t.times ??= 1;
+    t.left ??= t.done ? 0 : 1;
+    t.streak ??= 0;
+    t.last_full ??= "";
+  }
+}
+
+function resetDailyTasks(list) {
+  for (const t of list) {
+    if (t.category === "日常" && t.last_done !== todayStr()) {
+      t.done = false;
+      t.left = t.times;
+    }
+  }
+}
+
+function visibleTasks() {
+  const daily = tasks.filter(t => !t.done && t.category === "日常");
+  const other = tasks.filter(t => !t.done && t.category !== "日常")
+                     .sort((a, b) => a.priority - b.priority);
+  return daily.concat(other);
+}
+
+function checkIn(t) {
+  t.left -= 1;
+  t.last_done = todayStr();
+  if (t.left > 0) {
+    flash(`👍 ${t.name} +1（${t.times - t.left}/${t.times}）`);
+  } else {
+    t.done = true;
+    if (t.category === "日常") {
+      t.streak = (t.last_full === yesterdayStr()) ? t.streak + 1 : 1;
+      t.last_full = todayStr();
+      const fire = t.streak >= 2 ? `　🔥连续${t.streak}天！` : "";
+      flash(`✅ 完成：${t.name}，干得漂亮！${fire}`);
+    } else {
+      flash(`✅ 完成：${t.name}，干得漂亮！`);
+    }
+    if (visibleTasks().length === 0) setTimeout(() => flash("🎉 全部完成！去玩吧！"), 1600);
+  }
+  save(); render();
+}
+
+// ---------- 界面 ----------
+let flashTimer;
+function flash(msg) {
+  const el = document.getElementById("flash");
+  el.textContent = msg;
+  el.style.display = "block";
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => el.style.display = "none", 2500);
+}
+
+function taskCard(t, mark) {
+  const card = document.createElement("div");
+  card.className = "card";
+
+  const info = document.createElement("div");
+  info.className = "info";
+  const fire = (t.streak >= 2 && t.last_full === yesterdayStr())
+    ? ` <span class="fire">🔥${t.streak}天连击中</span>` : "";
+  info.innerHTML = `<span class="name"></span>${fire}`;
+  info.querySelector(".name").textContent = `${mark}${t.name}`;
+  if (t.times > 1) {
+    const doneTimes = t.times - t.left;
+    info.innerHTML += `
+      <div class="track"><div class="fill" style="width:${doneTimes / t.times * 100}%"></div></div>
+      <div class="count">${doneTimes}/${t.times}</div>`;
+  }
+
+  const btn = document.createElement("button");
+  btn.className = "primary";
+  btn.textContent = "打卡";
+  btn.onclick = () => checkIn(t);
+
+  const drop = document.createElement("button");
+  drop.textContent = "🗑";
+  drop.onclick = () => {
+    if (confirm(`确定放弃「${t.name}」？`)) {
+      tasks.splice(tasks.indexOf(t), 1);
+      save(); render();
+      flash(`🗑 已放弃：${t.name}。放弃也是决策，给大脑腾地方 👍`);
+    }
+  };
+
+  card.append(info, btn, drop);
+  return card;
+}
+
+function render() {
+  const main = document.getElementById("main");
+  main.innerHTML = "";
+  const vis = visibleTasks();
+  const daily = vis.filter(t => t.category === "日常");
+  const other = vis.filter(t => t.category !== "日常");
+  const dailyDone = tasks.filter(t => t.done && t.category === "日常");
+
+  document.getElementById("pickBtn").disabled = vis.length === 0;
+
+  if (vis.length === 0) {
+    const div = document.createElement("div");
+    div.className = "empty";
+    div.textContent = "🎉 全部完成！去玩吧！";
+    main.append(div);
+  }
+
+  if (daily.length || dailyDone.length) {
+    const h = document.createElement("h2");
+    h.textContent = `💙 今日日常（还剩${daily.length}件）`;
+    main.append(h);
+    daily.forEach(t => main.append(taskCard(t, "")));
+    for (const t of dailyDone) {
+      const line = document.createElement("div");
+      line.className = "done-line";
+      const fire = t.streak >= 2 ? ` 🔥×${t.streak}` : "";
+      line.innerHTML = `✅ <s></s>${fire}`;
+      line.querySelector("s").textContent = t.name;
+      main.append(line);
+    }
+  }
+
+  if (other.length) {
+    const h = document.createElement("h2");
+    h.textContent = "📌 近期 & 💡 兴趣";
+    main.append(h);
+    for (const t of other) {
+      const mark = t.priority === 1 ? "🎯 " : (t.category === "兴趣" ? "💡 " : "");
+      main.append(taskCard(t, mark));
+    }
+  }
+}
+
+// ---------- 🎲 现在干嘛 ----------
+let picked = null;
+document.getElementById("pickBtn").onclick = () => {
+  const vis = visibleTasks();
+  if (!vis.length) return;
+  const daily = vis.filter(t => t.category === "日常");
+  const pool = daily.length ? daily : vis;
+  picked = pool[Math.floor(Math.random() * pool.length)];
+  document.getElementById("pickName").textContent = picked.name;
+  document.getElementById("pickBox").style.display = "flex";
+};
+document.getElementById("pickCheckin").onclick = () => {
+  if (!picked) return;
+  checkIn(picked);
+  if (picked.done) {
+    picked = null;
+    document.getElementById("pickBox").style.display = "none";
+  }
+};
+
+// ---------- 添加 ----------
+document.getElementById("catRow").addEventListener("change", () => {
+  const cat = document.querySelector('input[name="cat"]:checked').value;
+  document.getElementById("timesWrap").style.display = cat === "日常" ? "" : "none";
+});
+document.getElementById("addForm").addEventListener("submit", e => {
+  e.preventDefault();
+  const name = document.getElementById("fName").value.trim();
+  if (!name) { flash("❌ 名称不能为空"); return; }
+  const category = document.querySelector('input[name="cat"]:checked').value;
+  const times = category === "日常"
+    ? Math.max(1, parseInt(document.getElementById("fTimes").value) || 8) : 1;
+  tasks.push({
+    name, category,
+    priority: parseInt(document.getElementById("fPriority").value),
+    times, left: times, done: false,
+    last_done: "", streak: 0, last_full: "",
+  });
+  save(); render();
+  flash(`✅ 已添加到【${category}】：${name}`);
+  document.getElementById("fName").value = "";
+});
+
+// ---------- 导出 / 导入（格式与Python版tasks.json兼容） ----------
+document.getElementById("exportBtn").onclick = () => {
+  const blob = new Blob([JSON.stringify(tasks, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "tasks.json";
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+document.getElementById("importBtn").onclick = () =>
+  document.getElementById("importFile").click();
+document.getElementById("importFile").addEventListener("change", e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const data = JSON.parse(reader.result);
+      if (!Array.isArray(data)) throw new Error("not a list");
+      if (!confirm(`将用文件里的 ${data.length} 条任务覆盖当前数据，确定？`)) return;
+      tasks = data;
+      fixOldTasks(tasks);
+      resetDailyTasks(tasks);
+      save(); render();
+      flash("⬆ 导入成功");
+    } catch {
+      flash("❌ 文件格式不对，需要 tasks.json");
+    }
+  };
+  reader.readAsText(file);
+  e.target.value = "";
+});
+
+// ---------- 启动 ----------
+let tasks = load();
+fixOldTasks(tasks);
+resetDailyTasks(tasks);
+save();
+render();
+</script>
+</body>
+</html>
