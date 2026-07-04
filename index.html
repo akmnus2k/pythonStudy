@@ -114,6 +114,15 @@
   .radio-row input:checked + span { font-weight: 700; }
   .radio-row label:has(input:checked) { background: var(--primary); color: var(--text-strong); }
 
+  #profileTabs { display: flex; gap: 6px; margin-bottom: 4px; }
+  #profileTabs button {
+    padding: 6px 16px; font-size: 0.85rem; color: var(--muted);
+    background: var(--soft); border-radius: 999px;
+  }
+  #profileTabs button.active {
+    background: var(--primary); color: var(--text-strong); font-weight: 600;
+  }
+
   h1 { cursor: pointer; }
   h1 input {
     font: inherit; color: var(--text-strong); width: 60%;
@@ -131,6 +140,10 @@
 <body>
 
 <div id="flash"></div>
+<div id="profileTabs">
+  <button data-p="1">我的</button>
+  <button data-p="2">她的</button>
+</div>
 <h1 id="pageTitle" title="点击修改名称">📋 待办清单</h1>
 
 <button id="pickBtn" class="primary big">🎲 现在干嘛？</button>
@@ -163,8 +176,8 @@
       <input type="number" id="fTimes" min="1" max="50" value="8">
     </div>
     <div id="dueWrap" style="display:none">
-      <label>倒计时天数（可不填）</label>
-      <input type="number" id="fDue" min="0" max="365">
+      <label>截止日期（可不填，按它倒计时）</label>
+      <input type="date" id="fDue">
     </div>
     <br>
     <button type="submit" class="primary big">添加</button>
@@ -203,7 +216,7 @@ window.addEventListener("error", e => {
   el.style.display = "block";
 });
 
-const KEY = "adhd_tasks_v1";
+let KEY, META_KEY, SYNC_KEY, TITLE_KEY;   // 具体值按当前档案在applyProfile()里赋
 
 // ---------- 日期（用本地时间，不能用toISOString——那是UTC，晚上8点后会差一天） ----------
 const dateStr = d => {
@@ -212,16 +225,25 @@ const dateStr = d => {
 };
 const todayStr = () => dateStr(new Date());
 const yesterdayStr = () => dateStr(new Date(Date.now() - 864e5));
-const dateAfterDays = n => dateStr(new Date(Date.now() + n * 864e5));
 // 到期日还差几天：正=还剩，0=今天到期，负=已超期
 const daysUntil = due =>
   Math.round((new Date(due + "T00:00:00") - new Date(todayStr() + "T00:00:00")) / 864e5);
 
 // ---------- 数据（与Python版tasks.json字段完全一致，可互相导入导出） ----------
-const META_KEY = "adhd_updated_at";   // 本地数据的最后修改时间，云同步靠它比新旧
-const SYNC_KEY = "adhd_sync_url";     // 同步码（含随机秘密路径的云端网址）
-const TITLE_KEY = "adhd_title";       // 自定义清单名称
-const getTitle = () => localStorage.getItem(TITLE_KEY) || "待办清单";
+// ---------- 双人档案：我的/她的，所有存储键按档案加后缀，数据完全独立 ----------
+let profile = localStorage.getItem("adhd_profile") || "1";
+
+function applyProfile() {
+  const sfx = profile === "1" ? "" : "_2";   // 档案1沿用旧键名，老数据无缝继承
+  KEY = "adhd_tasks_v1" + sfx;
+  META_KEY = "adhd_updated_at" + sfx;        // 本地数据的最后修改时间，云同步靠它比新旧
+  SYNC_KEY = "adhd_sync_url" + sfx;          // 同步码（两个档案各有各的，互不干扰）
+  TITLE_KEY = "adhd_title" + sfx;            // 自定义清单名称
+  syncUrl = localStorage.getItem(SYNC_KEY) || "";
+}
+
+const getTitle = () =>
+  localStorage.getItem(TITLE_KEY) || (profile === "1" ? "我的待办" : "她的待办");
 
 const load = () => JSON.parse(localStorage.getItem(KEY) || "[]");
 const getUpdatedAt = () => parseInt(localStorage.getItem(META_KEY) || "0");
@@ -309,6 +331,7 @@ function renderTitle() {
   const h1 = document.getElementById("pageTitle");
   h1.textContent = `📋 ${getTitle()}`;
   document.title = `📋 ${getTitle()}`;   // 浏览器标签页也跟着改
+  renderProfileTabs();                   // 档案切换标签上的名字也跟着标题走
 }
 
 document.getElementById("pageTitle").onclick = () => {
@@ -323,7 +346,8 @@ document.getElementById("pageTitle").onclick = () => {
   input.focus();
   input.select();
   input.onblur = () => {
-    localStorage.setItem(TITLE_KEY, input.value.trim() || "待办清单");
+    const v = input.value.trim();
+    v ? localStorage.setItem(TITLE_KEY, v) : localStorage.removeItem(TITLE_KEY);
     save();          // 名称也走云同步，手机电脑保持一致
     renderTitle();
   };
@@ -487,20 +511,16 @@ function editPanel(t) {
 
   if (t.category === "近期") {
     const pre = document.createElement("span");
-    pre.textContent = "倒计时";
+    pre.textContent = "截止";
     const dueInput = document.createElement("input");
-    dueInput.type = "number";
-    dueInput.min = 0;
-    dueInput.max = 365;
-    dueInput.placeholder = "不限";
-    if (t.due) dueInput.value = daysUntil(t.due);
+    dueInput.type = "date";                 // 存的就是日期，倒计时随时间自然减少
+    dueInput.value = t.due;
     dueInput.onchange = () => {
-      const raw = dueInput.value;
-      t.due = raw === "" ? "" : dateAfterDays(Math.max(0, parseInt(raw) || 0));
+      t.due = dueInput.value;               // 清空日期 = 不限期
       save(); render();
     };
     const post = document.createElement("span");
-    post.textContent = "天（清空=不限）";
+    post.textContent = "（清空=不限）";
     optRow.append(pre, dueInput, post);
   }
   panel.append(optRow);
@@ -588,6 +608,7 @@ function render() {
   const interest = vis.filter(t => t.category === "兴趣");
   const dailyDone = tasks.filter(t => t.done && t.category === "日常");
   const recentDone = tasks.filter(t => t.done && t.category === "近期");
+  const interestDone = tasks.filter(t => t.done && t.category === "兴趣");
 
   document.getElementById("pickBtn").disabled = vis.length === 0;
 
@@ -613,10 +634,11 @@ function render() {
     dailyDone.forEach(t => main.append(doneLine(t)));
   }
 
-  // 兴趣区默认折叠：闲暇时才需要打开看
-  if (interest.length) {
+  // 兴趣区默认折叠：闲暇时才需要打开看；完成的也保留在里面，点击可还原
+  if (interest.length || interestDone.length) {
     const det = fold(`💡 兴趣 & 探索（${interest.length}）`, "fold section", "interestOpen");
     interest.forEach(t => det.append(taskCard(t)));
+    interestDone.forEach(t => det.append(doneLine(t)));
     main.append(det);
   }
 }
@@ -653,9 +675,9 @@ document.getElementById("addForm").addEventListener("submit", e => {
   const category = document.querySelector('input[name="cat"]:checked').value;
   const times = category === "日常"
     ? Math.max(1, parseInt(document.getElementById("fTimes").value) || 8) : 1;
+  // 日期输入框的值本身就是 "YYYY-MM-DD"，和内部存储格式一致
   const dueRaw = document.getElementById("fDue").value;
-  const due = (category === "近期" && dueRaw !== "")
-    ? dateAfterDays(Math.max(0, parseInt(dueRaw) || 0)) : "";
+  const due = (category === "近期" && dueRaw) ? dueRaw : "";
   tasks.push({
     name, category,
     priority: parseInt(document.getElementById("fPriority").value),
@@ -705,7 +727,7 @@ document.getElementById("importFile").addEventListener("change", e => {
 // ---------- ☁ 云同步 ----------
 // 原理：云端只存一份 {updated_at, tasks}，谁的时间戳新听谁的（last-write-wins）。
 // 打开页面/切回页面时拉取；每次本地改动后推送。断网也能用，联网后自动补推。
-let syncUrl = localStorage.getItem(SYNC_KEY) || "";
+let syncUrl = "";   // 当前档案的同步码，applyProfile()里读取
 
 function setSyncState(txt) {
   document.getElementById("syncState").textContent = txt;
@@ -728,10 +750,12 @@ async function pushCloud() {
 
 async function pullCloud() {
   if (!syncUrl) return;
+  const myUrl = syncUrl;   // 记住发请求时的档案，响应回来时若已切换档案就丢弃
   try {
-    const res = await fetch(syncUrl);
+    const res = await fetch(myUrl);
     if (!res.ok) throw 0;
     const doc = await res.json();
+    if (syncUrl !== myUrl) return;
     if (doc && Array.isArray(doc.tasks) && doc.updated_at > getUpdatedAt()) {
       // 云端更新：整份采用，并按今天的日期做日常重置
       tasks = doc.tasks;
@@ -823,19 +847,50 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden) pullIfStale();
 });
 
-// ---------- 启动 ----------
-let tasks = load();
-{
+// ---------- 档案切换（我的/她的） ----------
+function profileLabel(p) {
+  const sfx = p === "1" ? "" : "_2";
+  return localStorage.getItem("adhd_title" + sfx) || (p === "1" ? "我的" : "她的");
+}
+
+function renderProfileTabs() {
+  for (const b of document.querySelectorAll("#profileTabs button")) {
+    b.textContent = profileLabel(b.dataset.p);
+    b.classList.toggle("active", b.dataset.p === profile);
+  }
+}
+
+document.querySelectorAll("#profileTabs button").forEach(b => {
+  b.onclick = () => {
+    if (b.dataset.p === profile) return;
+    profile = b.dataset.p;
+    localStorage.setItem("adhd_profile", profile);   // 记住上次用的档案
+    loadProfileState();
+  };
+});
+
+// ---------- 启动 / 切换档案时的完整加载 ----------
+let tasks = [];
+
+function loadProfileState() {
+  applyProfile();
+  tasks = load();
   // 只有fix/重置真的改了数据才标记"本地更新"，否则新设备会误以为自己比云端新
   const before = JSON.stringify(tasks);
   fixOldTasks(tasks);
   resetDailyTasks(tasks);
   if (JSON.stringify(tasks) !== before) save();
+  // 清掉上个档案的界面状态
+  expandedSubs.clear();
+  picked = null;
+  document.getElementById("pickBox").style.display = "none";
+  renderTitle();
+  render();
+  renderSyncPanel();
+  if (syncUrl) { lastPull = Date.now(); pullCloud(); }
 }
-renderTitle();
-render();
-renderSyncPanel();
-if (syncUrl) { lastPull = Date.now(); pullCloud(); }
+
+loadProfileState();
 </script>
 </body>
 </html>
