@@ -133,6 +133,19 @@
   }
   #clock .clock-date { font-size: 1.35rem; letter-spacing: normal; }
 
+  /* 状态栏：我正在干嘛 + TA正在干嘛 */
+  #statusBox {
+    background: var(--soft); border-radius: 10px;
+    padding: 8px 12px; margin-bottom: 10px; font-size: 0.9rem;
+  }
+  #myStatus { cursor: pointer; }
+  #myStatus input {
+    width: 100%; font: inherit; color: var(--text);
+    border: none; border-bottom: 2px solid var(--primary);
+    background: transparent; outline: none; padding: 0;
+  }
+  #otherStatus { color: var(--muted); margin-top: 4px; }
+
   /* 今日战报：正反馈要看得见 */
   #todayDone {
     background: var(--soft); border-radius: 10px;
@@ -166,7 +179,11 @@
 
 <div id="topRow">
   <div id="clock" title="点击看日期">--:--</div>
-  <button id="pickBtn" class="primary">🎲 现在干嘛</button>
+  <button id="pickBtn" class="primary">🎲 帮我选</button>
+</div>
+<div id="statusBox">
+  <div id="myStatus" title="点击修改你的状态"></div>
+  <div id="otherStatus" style="display:none"></div>
 </div>
 <div id="todayDone" style="display:none"></div>
 <div id="pickBox">
@@ -247,7 +264,7 @@ window.addEventListener("error", e => {
   el.style.display = "block";
 });
 
-let KEY, META_KEY, SYNC_KEY, TITLE_KEY;   // 具体值按当前档案在applyProfile()里赋
+let KEY, META_KEY, SYNC_KEY, TITLE_KEY, STATUS_KEY;   // 具体值按当前档案在applyProfile()里赋
 
 // ---------- 日期（用本地时间，不能用toISOString——那是UTC，晚上8点后会差一天） ----------
 const dateStr = d => {
@@ -293,6 +310,7 @@ function applyProfile() {
   META_KEY = "adhd_updated_at" + sfx;        // 本地数据的最后修改时间，云同步靠它比新旧
   SYNC_KEY = "adhd_sync_url" + sfx;          // 同步码（两个档案各有各的，互不干扰）
   TITLE_KEY = "adhd_title" + sfx;            // 自定义清单名称
+  STATUS_KEY = "adhd_status" + sfx;          // "正在干嘛"状态 {text, at}
   syncUrl = localStorage.getItem(SYNC_KEY) || "";
 }
 
@@ -417,6 +435,73 @@ document.getElementById("clock").onclick = () => {
 };
 
 renderClock();
+
+// ---------- "正在干嘛"状态：我的可编辑，TA的自动展示 ----------
+function ago(ts) {
+  const m = Math.round((Date.now() - ts) / 60000);
+  if (m < 1) return "刚刚";
+  if (m < 60) return `${m}分钟前`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}小时前`;
+  return `${Math.round(h / 24)}天前`;
+}
+
+function renderStatus() {
+  const el = document.getElementById("myStatus");
+  if (el.querySelector("input")) return;   // 正在编辑就别刷掉输入框
+  const s = JSON.parse(localStorage.getItem(STATUS_KEY) || "null");
+  el.textContent = (s && s.text)
+    ? `💬 ${s.text}（${ago(s.at)}）`
+    : "💬 在干嘛？点这里告诉TA（比如：备课ing）";
+}
+
+document.getElementById("myStatus").onclick = () => {
+  const el = document.getElementById("myStatus");
+  if (el.querySelector("input")) return;
+  const s = JSON.parse(localStorage.getItem(STATUS_KEY) || "null");
+  const input = document.createElement("input");
+  input.type = "text";
+  input.maxLength = 30;
+  input.value = s ? s.text : "";
+  input.placeholder = "备课ing、摸鱼ing…（清空=不显示）";
+  el.textContent = "";
+  el.append(input);
+  input.focus();
+  input.onblur = () => {
+    const text = input.value.trim();
+    localStorage.setItem(STATUS_KEY, JSON.stringify(text ? { text, at: Date.now() } : null));
+    input.remove();  // 先摘掉输入框，renderStatus的"编辑中"保护才会放行
+    save();          // 状态随云同步走，TA那边就能看到
+    renderStatus();
+  };
+  input.addEventListener("keydown", e => { if (e.key === "Enter") input.blur(); });
+};
+
+// TA的状态：读"另一个档案"的同步码（如果这台设备配置过），直接拉云端文档
+let otherStatusCache = null;
+
+async function fetchOtherStatus() {
+  const otherSfx = profile === "1" ? "_2" : "";
+  const url = localStorage.getItem("adhd_sync_url" + otherSfx) || "";
+  if (!url) { otherStatusCache = null; renderOtherStatus(); return; }
+  try {
+    const res = await fetch(url);
+    const doc = await res.json();
+    otherStatusCache = (doc && doc.status && doc.status.text) ? doc.status : null;
+  } catch { /* 拉不到就保持上次的 */ }
+  renderOtherStatus();
+}
+
+function renderOtherStatus() {
+  const el = document.getElementById("otherStatus");
+  if (!otherStatusCache) { el.style.display = "none"; return; }
+  const otherP = profile === "1" ? "2" : "1";
+  el.textContent = `👀 ${profileLabel(otherP)}：${otherStatusCache.text}（${ago(otherStatusCache.at)}）`;
+  el.style.display = "";
+}
+
+// 每分钟刷新一次"xx分钟前"的字样（不发网络请求，只重算文字）
+setInterval(() => { renderStatus(); renderOtherStatus(); }, 60000);
 
 // ---------- 标题：点击自定义名称 ----------
 function renderTitle() {
@@ -888,7 +973,10 @@ async function pushCloud() {
   try {
     const res = await fetch(syncUrl, {
       method: "PUT",
-      body: JSON.stringify({ updated_at: getUpdatedAt(), tasks, title: getTitle() }),
+      body: JSON.stringify({
+        updated_at: getUpdatedAt(), tasks, title: getTitle(),
+        status: JSON.parse(localStorage.getItem(STATUS_KEY) || "null"),
+      }),
     });
     if (!res.ok) throw 0;
     syncOK();
@@ -909,6 +997,7 @@ async function pullCloud() {
       localStorage.setItem(KEY, JSON.stringify(tasks));
       localStorage.setItem(META_KEY, String(doc.updated_at));
       if (doc.title) { localStorage.setItem(TITLE_KEY, doc.title); renderTitle(); }
+      if (doc.status) { localStorage.setItem(STATUS_KEY, JSON.stringify(doc.status)); renderStatus(); }
       const before = JSON.stringify(tasks);
       fixOldTasks(tasks);
       resetDailyTasks(tasks);
@@ -987,6 +1076,7 @@ function pullIfStale() {
   if (Date.now() - lastPull > 30000) {
     lastPull = Date.now();
     pullCloud();
+    fetchOtherStatus();   // 顺便更新TA的状态
   }
 }
 window.addEventListener("focus", pullIfStale);
@@ -1045,8 +1135,10 @@ function loadProfileState() {
   picked = null;
   document.getElementById("pickBox").style.display = "none";
   renderTitle();
+  renderStatus();
   render();
   renderSyncPanel();
+  fetchOtherStatus();
   if (syncUrl) { lastPull = Date.now(); pullCloud(); }
 }
 
