@@ -365,15 +365,27 @@ function resetDailyTasks(list) {
   }
 }
 
+// 近期任务再按时间分流：截止日在7天以外的是Upcoming，7天以内/没填日期的是"近一周"
+const isUpcoming = t => t.category === "近期" && t.due && daysUntil(t.due) > 7;
+
+// ↑↓排序时的"同区"判定：近一周和Upcoming算两个区
+const groupOf = t => t.category === "近期" ? (isUpcoming(t) ? "近期远" : "近期近") : t.category;
+
 function visibleTasks() {
-  // 顺序 = 页面顺序：近期 → 日常 → 兴趣；各区内部按数组顺序（↑↓手动调整）
+  // 顺序 = 页面顺序：近一周 → Upcoming → 日常 → 兴趣；各区内部按数组顺序（↑↓手动调整）
   const sec = c => tasks.filter(t => !t.done && t.category === c);
-  return [...sec("近期"), ...sec("日常"), ...sec("兴趣")];
+  const recent = sec("近期");
+  return [
+    ...recent.filter(t => !isUpcoming(t)),
+    ...recent.filter(isUpcoming),
+    ...sec("日常"),
+    ...sec("兴趣"),
+  ];
 }
 
 function moveTask(t, dir) {
   // 只在同一区内挪：找到本区可见任务里的上/下一个，交换两者在tasks数组里的位置
-  const section = tasks.filter(x => !x.done && x.category === t.category);
+  const section = tasks.filter(x => !x.done && groupOf(x) === groupOf(t));
   const neighbor = section[section.indexOf(t) + dir];
   if (!neighbor) return;   // 已经在区顶/区底
   const i = tasks.indexOf(t), j = tasks.indexOf(neighbor);
@@ -814,7 +826,7 @@ function doneLine(t) {
 }
 
 // 折叠组的开合状态（只在本次打开期间记住，刷新后回到默认收起）
-const ui = { recentDoneOpen: false, interestOpen: false, dormantOpen: false, boardOpen: false };
+const ui = { recentDoneOpen: false, interestOpen: false, dormantOpen: false, boardOpen: false, upcomingOpen: false };
 
 function fold(title, cls, openKey) {
   const det = document.createElement("details");
@@ -867,9 +879,17 @@ function render() {
     main.append(div);
   }
 
-  // 三区顺序：近期推进 → 今日日常 → 兴趣探索
-  if (recent.length || recentDone.length) {
-    section(main, "📌 近期推进", recent);
+  // 分区顺序：近一周 → Upcoming（折叠）→ 日常 → 兴趣（折叠）
+  const week = recent.filter(t => !isUpcoming(t));
+  const upcoming = recent.filter(isUpcoming);
+  if (week.length || upcoming.length || recentDone.length) {
+    if (week.length) section(main, "📌 近一周", week);
+    if (upcoming.length) {
+      // 一周以外的事先收起来；日子临近7天时会自动浮上来到"近一周"
+      const det = fold(`🗓 Upcoming（${upcoming.length}）· 一周以后`, "fold section", "upcomingOpen");
+      upcoming.forEach(t => det.append(taskCard(t)));
+      main.append(det);
+    }
     if (recentDone.length) {
       const det = fold(`✅ 已完成（${recentDone.length}）`, "fold", "recentDoneOpen");
       recentDone.forEach(t => det.append(doneLine(t)));
@@ -905,8 +925,10 @@ let picked = null;
 document.getElementById("pickBtn").onclick = () => {
   const vis = visibleTasks();
   if (!vis.length) return;
-  // 所有任务机会均等：这个按钮的使命是打破"沉迷一件事"，不是催日常
-  picked = vis[Math.floor(Math.random() * vis.length)];
+  // 所有任务机会均等，但不抽Upcoming：一周后才到期的事不该是"现在干嘛"的答案
+  const pool = vis.filter(t => !isUpcoming(t));
+  const from = pool.length ? pool : vis;
+  picked = from[Math.floor(Math.random() * from.length)];
   document.getElementById("pickName").textContent = picked.name;
   document.getElementById("pickBox").style.display = "flex";
 };
