@@ -124,6 +124,15 @@
   }
   #tabSwap { order: 3; background: none; padding: 6px 8px; }
 
+  /* 顶部：大时钟（对抗时间盲）+ 缩小版🎲 */
+  #topRow { display: flex; align-items: center; gap: 10px; margin: 2px 0 12px; }
+  #clock {
+    flex: 1; font-size: 2.4rem; font-weight: 700; color: var(--text-strong);
+    letter-spacing: 2px; cursor: pointer;
+    font-variant-numeric: tabular-nums;   /* 等宽数字，跳分钟时不晃动 */
+  }
+  #clock .clock-date { font-size: 1.35rem; letter-spacing: normal; }
+
   h1 { cursor: pointer; }
   h1 input {
     font: inherit; color: var(--text-strong); width: 60%;
@@ -148,7 +157,10 @@
 </div>
 <h1 id="pageTitle" title="点击修改名称">📋 待办清单</h1>
 
-<button id="pickBtn" class="primary big">🎲 现在干嘛？</button>
+<div id="topRow">
+  <div id="clock" title="点击看日期">--:--</div>
+  <button id="pickBtn" class="primary">🎲 现在干嘛</button>
+</div>
 <div id="pickBox">
   <div class="info">🎲 就它了 → <b id="pickName"></b></div>
   <button id="pickCheckin" class="primary">✅ 打卡</button>
@@ -327,6 +339,38 @@ function flash(msg) {
   clearTimeout(flashTimer);
   flashTimer = setTimeout(() => el.style.display = "none", 2500);
 }
+
+// ---------- 时钟：对抗时间盲，默认时间，点一下看日期（几秒后自动跳回） ----------
+let clockShowDate = false;
+let clockRevert;
+
+function renderClock() {
+  const el = document.getElementById("clock");
+  const now = new Date();
+  if (clockShowDate) {
+    const week = "日一二三四五六"[now.getDay()];
+    el.innerHTML = `<span class="clock-date"></span>`;
+    el.querySelector(".clock-date").textContent =
+      `${now.getMonth() + 1}月${now.getDate()}日 周${week}`;
+  } else {
+    const p = n => String(n).padStart(2, "0");
+    el.textContent = `${p(now.getHours())}:${p(now.getMinutes())}`;
+  }
+}
+
+setInterval(renderClock, 1000);
+
+document.getElementById("clock").onclick = () => {
+  clockShowDate = !clockShowDate;
+  renderClock();
+  clearTimeout(clockRevert);
+  if (clockShowDate) {
+    // 6秒后自动回到时间，保证"默认显示时间"永远成立
+    clockRevert = setTimeout(() => { clockShowDate = false; renderClock(); }, 6000);
+  }
+};
+
+renderClock();
 
 // ---------- 标题：点击自定义名称 ----------
 function renderTitle() {
