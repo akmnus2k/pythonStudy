@@ -122,6 +122,7 @@
   #profileTabs button.active {
     background: var(--primary); color: var(--text-strong); font-weight: 600;
   }
+  #tabSwap { order: 3; background: none; padding: 6px 8px; }
 
   h1 { cursor: pointer; }
   h1 input {
@@ -143,6 +144,7 @@
 <div id="profileTabs">
   <button data-p="1">我的</button>
   <button data-p="2">她的</button>
+  <button id="tabSwap" title="调换两个档案的显示顺序">⇄</button>
 </div>
 <h1 id="pageTitle" title="点击修改名称">📋 待办清单</h1>
 
@@ -854,20 +856,33 @@ function profileLabel(p) {
 }
 
 function renderProfileTabs() {
-  for (const b of document.querySelectorAll("#profileTabs button")) {
+  // 顺序是每台设备自己的偏好（不走云同步）：她的手机上可以她排前面
+  const swapped = localStorage.getItem("adhd_tab_order") === "21";
+  for (const b of document.querySelectorAll("#profileTabs button[data-p]")) {
     b.textContent = profileLabel(b.dataset.p);
     b.classList.toggle("active", b.dataset.p === profile);
+    b.style.order = (b.dataset.p === "1") === !swapped ? 1 : 2;
+    b.title = b.dataset.p === profile ? "再点一次修改名称" : "点击切换档案";
   }
 }
 
-document.querySelectorAll("#profileTabs button").forEach(b => {
+document.querySelectorAll("#profileTabs button[data-p]").forEach(b => {
   b.onclick = () => {
-    if (b.dataset.p === profile) return;
+    if (b.dataset.p === profile) {
+      document.getElementById("pageTitle").click();   // 点当前档案 = 直接改名
+      return;
+    }
     profile = b.dataset.p;
     localStorage.setItem("adhd_profile", profile);   // 记住上次用的档案
     loadProfileState();
   };
 });
+
+document.getElementById("tabSwap").onclick = () => {
+  const swapped = localStorage.getItem("adhd_tab_order") === "21";
+  localStorage.setItem("adhd_tab_order", swapped ? "12" : "21");
+  renderProfileTabs();
+};
 
 // ---------- 启动 / 切换档案时的完整加载 ----------
 let tasks = [];
