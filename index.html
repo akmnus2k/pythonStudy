@@ -133,6 +133,13 @@
   }
   #clock .clock-date { font-size: 1.35rem; letter-spacing: normal; }
 
+  /* 今日战报：正反馈要看得见 */
+  #todayDone {
+    background: var(--soft); border-radius: 10px;
+    padding: 8px 12px; margin-bottom: 12px;
+    font-size: 0.9rem; color: var(--text);
+  }
+
   h1 { cursor: pointer; }
   h1 input {
     font: inherit; color: var(--text-strong); width: 60%;
@@ -161,6 +168,7 @@
   <div id="clock" title="点击看日期">--:--</div>
   <button id="pickBtn" class="primary">🎲 现在干嘛</button>
 </div>
+<div id="todayDone" style="display:none"></div>
 <div id="pickBox">
   <div class="info">🎲 就它了 → <b id="pickName"></b></div>
   <button id="pickCheckin" class="primary">✅ 打卡</button>
@@ -657,6 +665,25 @@ function render() {
   const interestDone = tasks.filter(t => t.done && t.category === "兴趣");
 
   document.getElementById("pickBtn").disabled = vis.length === 0;
+
+  // 今日战报：今天打过卡的都算，日常带次数（喝水×3），一件没做就整条隐藏
+  const strip = document.getElementById("todayDone");
+  const parts = [];
+  for (const t of tasks) {
+    if (t.last_done !== todayStr()) continue;
+    if (t.category === "日常") {
+      const n = t.times - t.left;
+      if (n > 0) parts.push(n > 1 ? `${t.name}×${n}` : t.name);
+    } else if (t.done) {
+      parts.push(t.name);
+    }
+  }
+  if (parts.length) {
+    strip.textContent = `✨ 今日已完成：${parts.join(" · ")}`;
+    strip.style.display = "";
+  } else {
+    strip.style.display = "none";
+  }
 
   if (vis.length === 0) {
     const div = document.createElement("div");
