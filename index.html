@@ -133,18 +133,24 @@
   }
   #clock .clock-date { font-size: 1.35rem; letter-spacing: normal; }
 
-  /* 状态栏：我正在干嘛 + TA正在干嘛 */
+  /* 留言板：两人的状态和留言合并成一条时间线 */
   #statusBox {
     background: var(--soft); border-radius: 10px;
     padding: 8px 12px; margin-bottom: 10px; font-size: 0.9rem;
   }
-  #myStatus { cursor: pointer; }
-  #myStatus input {
-    width: 100%; font: inherit; color: var(--text);
-    border: none; border-bottom: 2px solid var(--primary);
-    background: transparent; outline: none; padding: 0;
+  #msgInputRow { display: flex; gap: 6px; }
+  #msgInputRow input {
+    flex: 1; padding: 8px; border: 1px solid var(--card);
+    border-radius: 8px; background: var(--bg); color: var(--text); font-size: 0.95rem;
   }
-  #otherStatus { color: var(--muted); margin-top: 4px; }
+  #msgInputRow button { padding: 6px 12px; }
+  #msgList { margin-top: 4px; }
+  #msgList.expanded { max-height: 220px; overflow-y: auto; }  /* 上下滑动看全部 */
+  .msg { display: flex; align-items: center; gap: 6px; padding: 3px 0; }
+  .msg span { flex: 1; }
+  .msg.other { color: var(--muted); }
+  .msg button { background: none; color: var(--muted); padding: 0 6px; }
+  #msgMore { background: none; color: var(--muted); font-size: 0.8rem; padding: 4px 0 0; }
 
   /* 今日战报：正反馈要看得见 */
   #todayDone {
@@ -182,8 +188,12 @@
   <button id="pickBtn" class="primary">🎲 帮我选</button>
 </div>
 <div id="statusBox">
-  <div id="myStatus" title="点击修改你的状态"></div>
-  <div id="otherStatus" style="display:none"></div>
+  <div id="msgInputRow">
+    <input id="msgInput" type="text" maxlength="60" placeholder="💬 说点什么…（备课ing、给TA留言）">
+    <button id="msgSend" class="primary">发送</button>
+  </div>
+  <div id="msgList"></div>
+  <button id="msgMore" style="display:none"></button>
 </div>
 <div id="todayDone" style="display:none"></div>
 <div id="pickBox">
@@ -264,7 +274,7 @@ window.addEventListener("error", e => {
   el.style.display = "block";
 });
 
-let KEY, META_KEY, SYNC_KEY, TITLE_KEY, STATUS_KEY;   // 具体值按当前档案在applyProfile()里赋
+let KEY, META_KEY, SYNC_KEY, TITLE_KEY, STATUS_KEY, MSG_KEY;   // 具体值按当前档案在applyProfile()里赋
 
 // ---------- 日期（用本地时间，不能用toISOString——那是UTC，晚上8点后会差一天） ----------
 const dateStr = d => {
@@ -310,7 +320,8 @@ function applyProfile() {
   META_KEY = "adhd_updated_at" + sfx;        // 本地数据的最后修改时间，云同步靠它比新旧
   SYNC_KEY = "adhd_sync_url" + sfx;          // 同步码（两个档案各有各的，互不干扰）
   TITLE_KEY = "adhd_title" + sfx;            // 自定义清单名称
-  STATUS_KEY = "adhd_status" + sfx;          // "正在干嘛"状态 {text, at}
+  STATUS_KEY = "adhd_status" + sfx;          // 旧版单条状态（仅迁移用）
+  MSG_KEY = "adhd_msgs" + sfx;               // 留言列表 [{text, at}...] 新的在前
   syncUrl = localStorage.getItem(SYNC_KEY) || "";
 }
 
@@ -436,7 +447,7 @@ document.getElementById("clock").onclick = () => {
 
 renderClock();
 
-// ---------- "正在干嘛"状态：我的可编辑，TA的自动展示 ----------
+// ---------- 留言板：两人的"正在干嘛"和留言，合并成一条时间线 ----------
 function ago(ts) {
   const m = Math.round((Date.now() - ts) / 60000);
   if (m < 1) return "刚刚";
@@ -446,62 +457,83 @@ function ago(ts) {
   return `${Math.round(h / 24)}天前`;
 }
 
-function renderStatus() {
-  const el = document.getElementById("myStatus");
-  if (el.querySelector("input")) return;   // 正在编辑就别刷掉输入框
-  const s = JSON.parse(localStorage.getItem(STATUS_KEY) || "null");
-  el.textContent = (s && s.text)
-    ? `💬 ${s.text}（${ago(s.at)}）`
-    : "💬 在干嘛？点这里告诉TA（比如：备课ing）";
-}
+const getMsgs = () => JSON.parse(localStorage.getItem(MSG_KEY) || "[]");
 
-document.getElementById("myStatus").onclick = () => {
-  const el = document.getElementById("myStatus");
-  if (el.querySelector("input")) return;
-  const s = JSON.parse(localStorage.getItem(STATUS_KEY) || "null");
-  const input = document.createElement("input");
-  input.type = "text";
-  input.maxLength = 30;
-  input.value = s ? s.text : "";
-  input.placeholder = "备课ing、摸鱼ing…（清空=不显示）";
-  el.textContent = "";
-  el.append(input);
-  input.focus();
-  input.onblur = () => {
-    const text = input.value.trim();
-    localStorage.setItem(STATUS_KEY, JSON.stringify(text ? { text, at: Date.now() } : null));
-    input.remove();  // 先摘掉输入框，renderStatus的"编辑中"保护才会放行
-    save();          // 状态随云同步走，TA那边就能看到
-    renderStatus();
-  };
-  input.addEventListener("keydown", e => { if (e.key === "Enter") input.blur(); });
-};
+// TA的留言：读"另一个档案"的同步码（如果这台设备配置过），直接拉云端文档
+let otherMsgsCache = [];
 
-// TA的状态：读"另一个档案"的同步码（如果这台设备配置过），直接拉云端文档
-let otherStatusCache = null;
-
-async function fetchOtherStatus() {
+async function fetchOtherBoard() {
   const otherSfx = profile === "1" ? "_2" : "";
   const url = localStorage.getItem("adhd_sync_url" + otherSfx) || "";
-  if (!url) { otherStatusCache = null; renderOtherStatus(); return; }
+  if (!url) { otherMsgsCache = []; renderBoard(); return; }
   try {
     const res = await fetch(url);
     const doc = await res.json();
-    otherStatusCache = (doc && doc.status && doc.status.text) ? doc.status : null;
+    otherMsgsCache = (doc && doc.messages) ? doc.messages
+      : (doc && doc.status && doc.status.text ? [doc.status] : []);
   } catch { /* 拉不到就保持上次的 */ }
-  renderOtherStatus();
+  renderBoard();
 }
 
-function renderOtherStatus() {
-  const el = document.getElementById("otherStatus");
-  if (!otherStatusCache) { el.style.display = "none"; return; }
+function postMsg() {
+  const input = document.getElementById("msgInput");
+  const text = input.value.trim();
+  if (!text) return;
+  const msgs = getMsgs();
+  msgs.unshift({ text, at: Date.now() });                            // 新的在最前
+  localStorage.setItem(MSG_KEY, JSON.stringify(msgs.slice(0, 50)));  // 最多留50条
+  input.value = "";
+  save();          // 留言随云同步走，TA那边就能看到
+  renderBoard();
+}
+document.getElementById("msgSend").onclick = postMsg;
+document.getElementById("msgInput").addEventListener("keydown", e => {
+  if (e.key === "Enter") postMsg();
+});
+
+function renderBoard() {
   const otherP = profile === "1" ? "2" : "1";
-  el.textContent = `👀 ${profileLabel(otherP)}：${otherStatusCache.text}（${ago(otherStatusCache.at)}）`;
-  el.style.display = "";
+  const mine = getMsgs().map(m => ({ ...m, mine: true }));
+  const theirs = otherMsgsCache.map(m => ({ ...m, mine: false }));
+  const all = mine.concat(theirs).sort((a, b) => b.at - a.at);   // 两人合并成一条时间线
+
+  const list = document.getElementById("msgList");
+  const more = document.getElementById("msgMore");
+  list.innerHTML = "";
+  list.classList.toggle("expanded", ui.boardOpen);
+
+  const shown = ui.boardOpen ? all : all.slice(0, 3);   // 默认只露最新3条
+  for (const m of shown) {
+    const line = document.createElement("div");
+    line.className = "msg" + (m.mine ? "" : " other");
+    const span = document.createElement("span");
+    span.textContent =
+      `${m.mine ? "💬" : "👀"} ${profileLabel(m.mine ? profile : otherP)}：${m.text}（${ago(m.at)}）`;
+    line.append(span);
+    if (m.mine) {   // 只能删自己的留言
+      const del = document.createElement("button");
+      del.textContent = "✕";
+      del.onclick = () => {
+        localStorage.setItem(MSG_KEY, JSON.stringify(getMsgs().filter(x => x.at !== m.at)));
+        save();
+        renderBoard();
+      };
+      line.append(del);
+    }
+    list.append(line);
+  }
+
+  if (all.length > 3) {
+    more.style.display = "";
+    more.textContent = ui.boardOpen ? "收起" : `展开全部（${all.length}条）`;
+    more.onclick = () => { ui.boardOpen = !ui.boardOpen; renderBoard(); };
+  } else {
+    more.style.display = "none";
+  }
 }
 
-// 每分钟刷新一次"xx分钟前"的字样（不发网络请求，只重算文字）
-setInterval(() => { renderStatus(); renderOtherStatus(); }, 60000);
+// 每分钟重算一次"xx分钟前"的字样（不发网络请求）
+setInterval(renderBoard, 60000);
 
 // ---------- 标题：点击自定义名称 ----------
 function renderTitle() {
@@ -782,7 +814,7 @@ function doneLine(t) {
 }
 
 // 折叠组的开合状态（只在本次打开期间记住，刷新后回到默认收起）
-const ui = { recentDoneOpen: false, interestOpen: false, dormantOpen: false };
+const ui = { recentDoneOpen: false, interestOpen: false, dormantOpen: false, boardOpen: false };
 
 function fold(title, cls, openKey) {
   const det = document.createElement("details");
@@ -975,7 +1007,8 @@ async function pushCloud() {
       method: "PUT",
       body: JSON.stringify({
         updated_at: getUpdatedAt(), tasks, title: getTitle(),
-        status: JSON.parse(localStorage.getItem(STATUS_KEY) || "null"),
+        messages: getMsgs(),
+        status: getMsgs()[0] || null,   // 兼容：对方还没刷新到新版时也能看到最新一条
       }),
     });
     if (!res.ok) throw 0;
@@ -997,7 +1030,13 @@ async function pullCloud() {
       localStorage.setItem(KEY, JSON.stringify(tasks));
       localStorage.setItem(META_KEY, String(doc.updated_at));
       if (doc.title) { localStorage.setItem(TITLE_KEY, doc.title); renderTitle(); }
-      if (doc.status) { localStorage.setItem(STATUS_KEY, JSON.stringify(doc.status)); renderStatus(); }
+      if (doc.messages) {
+        localStorage.setItem(MSG_KEY, JSON.stringify(doc.messages));
+        renderBoard();
+      } else if (doc.status) {
+        localStorage.setItem(MSG_KEY, JSON.stringify([doc.status]));   // 旧格式云端文档
+        renderBoard();
+      }
       const before = JSON.stringify(tasks);
       fixOldTasks(tasks);
       resetDailyTasks(tasks);
@@ -1076,7 +1115,7 @@ function pullIfStale() {
   if (Date.now() - lastPull > 30000) {
     lastPull = Date.now();
     pullCloud();
-    fetchOtherStatus();   // 顺便更新TA的状态
+    fetchOtherBoard();   // 顺便更新TA的留言
   }
 }
 window.addEventListener("focus", pullIfStale);
@@ -1134,11 +1173,17 @@ function loadProfileState() {
   expandedSubs.clear();
   picked = null;
   document.getElementById("pickBox").style.display = "none";
+  // 旧版的单条状态迁移成留言列表（只发生一次）
+  if (!localStorage.getItem(MSG_KEY)) {
+    const old = JSON.parse(localStorage.getItem(STATUS_KEY) || "null");
+    if (old && old.text) localStorage.setItem(MSG_KEY, JSON.stringify([old]));
+  }
+  ui.boardOpen = false;   // 切档案回到收起状态
   renderTitle();
-  renderStatus();
+  renderBoard();
   render();
   renderSyncPanel();
-  fetchOtherStatus();
+  fetchOtherBoard();
   if (syncUrl) { lastPull = Date.now(); pullCloud(); }
 }
 
