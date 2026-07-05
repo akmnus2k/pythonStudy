@@ -361,7 +361,7 @@ window.addEventListener("error", e => {
   el.style.display = "block";
 });
 
-let KEY, META_KEY, SYNC_KEY, TITLE_KEY, STATUS_KEY, MSG_KEY, DOING_KEY, LOG_KEY, READ_KEY;   // 具体值按当前档案在applyProfile()里赋
+let KEY, META_KEY, SYNC_KEY, TITLE_KEY, STATUS_KEY, MSG_KEY, DOING_KEY, LOG_KEY, READ_KEY, VAULT_KEY;   // 具体值按当前档案在applyProfile()里赋
 
 // ---------- 日期（用本地时间，不能用toISOString——那是UTC，晚上8点后会差一天） ----------
 const dateStr = d => {
@@ -416,6 +416,7 @@ function applyProfile() {
   DOING_KEY = "adhd_doing" + sfx;            // 正在做 {name, note, at} 或 null
   LOG_KEY = "adhd_log" + sfx;                // 完成流水 [{name, at}...]，用于每日回顾
   READ_KEY = "adhd_read_msgs" + sfx;         // 已读留言的时间戳集合（仅本机，不走云同步）
+  VAULT_KEY = "adhd_msgs_vault" + sfx;       // 留言保险库：只增不改的本地备份，云同步碰不到
   syncUrl = localStorage.getItem(SYNC_KEY) || "";
 }
 
@@ -650,6 +651,40 @@ function ago(ts) {
 
 const getMsgs = () => JSON.parse(localStorage.getItem(MSG_KEY) || "[]");
 
+// 留言"只增不减"：把云端来的留言按at去重合并进本地，永不删本地已有的。
+// 这样单次坏的/空的同步再也冲不掉整段对话（代价：删留言可能被别的设备合并回来）。
+function mergeIncomingMsgs(incoming) {
+  if (!Array.isArray(incoming) || !incoming.length) return false;
+  const local = getMsgs();
+  const ats = new Set(local.map(m => m.at));
+  const added = incoming.filter(m => m && m.at != null && !ats.has(m.at));
+  if (!added.length) return false;
+  const merged = local.concat(added).sort((a, b) => b.at - a.at).slice(0, 50);
+  localStorage.setItem(MSG_KEY, JSON.stringify(merged));
+  return true;
+}
+
+// 留言保险库：把见过的所有留言(我的+对方的)只增不改地存一份本地备份，云同步碰不到它。
+// 万一以后再丢，从这份备份一键找回。
+function vaultMessages() {
+  const vault = JSON.parse(localStorage.getItem(VAULT_KEY) || "[]");
+  const seen = new Set(vault.map(v => v.who + "_" + v.at));
+  let changed = false;
+  const add = (arr, who) => {
+    for (const m of (arr || [])) {
+      if (!m || m.at == null) continue;
+      const k = who + "_" + m.at;
+      if (!seen.has(k)) { vault.push({ text: m.text, at: m.at, who }); seen.add(k); changed = true; }
+    }
+  };
+  add(getMsgs(), "me");
+  add(otherMsgsCache, "other");
+  if (changed) {
+    vault.sort((a, b) => a.at - b.at);
+    localStorage.setItem(VAULT_KEY, JSON.stringify(vault.slice(-1000)));   // 最多留最近1000条
+  }
+}
+
 // 已读留言：本地记录哪些留言(按at时间戳)已读，读过的折进"历史留言"折叠
 const getReadSet = () => new Set(JSON.parse(localStorage.getItem(READ_KEY) || "[]"));
 function setRead(at, isRead) {
@@ -731,6 +766,7 @@ function msgLine(m, otherP, inHistory) {
 }
 
 function renderBoard() {
+  vaultMessages();   // 每次渲染前把见过的留言存进本地保险库
   const otherP = profile === "1" ? "2" : "1";
   const t0 = startOfToday();
   // 留言板只展示当天的；更早的都在"回顾"里
@@ -1532,19 +1568,13 @@ async function pullCloud() {
     if (!res.ok) throw 0;
     const doc = await res.json();
     if (syncUrl !== myUrl) return;
+    let pushed = false;
     if (doc && Array.isArray(doc.tasks) && doc.updated_at > getUpdatedAt()) {
-      // 云端更新：整份采用，并按今天的日期做日常重置
+      // 云端更新：整份采用，并按今天的日期做日常重置（留言除外——见下方"只增不减"合并）
       tasks = doc.tasks;
       localStorage.setItem(KEY, JSON.stringify(tasks));
       localStorage.setItem(META_KEY, String(doc.updated_at));
       if (doc.title) { localStorage.setItem(TITLE_KEY, doc.title); renderTitle(); }
-      if (doc.messages) {
-        localStorage.setItem(MSG_KEY, JSON.stringify(doc.messages));
-        renderBoard();
-      } else if (doc.status) {
-        localStorage.setItem(MSG_KEY, JSON.stringify([doc.status]));   // 旧格式云端文档
-        renderBoard();
-      }
       if (doc.doing !== undefined) {
         doc.doing ? localStorage.setItem(DOING_KEY, JSON.stringify(doc.doing))
                   : localStorage.removeItem(DOING_KEY);
@@ -1558,6 +1588,17 @@ async function pullCloud() {
       render();
     } else if (!doc || (doc.updated_at || 0) < getUpdatedAt()) {
       pushCloud();   // 云端是空的或更旧：把本地推上去
+      pushed = true;
+    }
+
+    // 留言：永远只增不减地合并——任何一次同步都冲不掉整段对话（防复发核心）
+    if (doc) {
+      const incoming = Array.isArray(doc.messages) ? doc.messages
+                     : (doc.status && doc.status.text ? [doc.status] : []);
+      if (mergeIncomingMsgs(incoming)) renderBoard();
+      const cloudAts = new Set(incoming.map(m => m && m.at));
+      // 云端缺了本地有的留言 → 说明云端被写旧/写空了，立刻用本地补回云端
+      if (!pushed && getMsgs().some(m => !cloudAts.has(m.at))) pushCloud();
     }
     syncOK();
   } catch { syncFail(); }
