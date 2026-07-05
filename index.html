@@ -222,11 +222,7 @@
   .msg span { flex: 1; }
   .msg.other { color: var(--muted); }
   .msg button { background: none; color: var(--muted); padding: 0 6px; }
-  /* 点开留言后露出的操作按钮 */
-  .msg .msg-act {
-    flex: 0 0 auto; background: var(--soft); color: var(--text-strong);
-    padding: 3px 10px; font-size: 0.8rem; border-radius: 8px;
-  }
+  .msg .msg-read { font-size: 0.95rem; color: var(--primary-dark); }
   /* 历史留言折叠：融进留言板，不要独立卡片边框 */
   #msgHistory { margin-top: 2px; }
   #msgHistory details.fold { margin: 0; padding: 4px 0 0; background: transparent; border: none; }
@@ -661,8 +657,7 @@ function setRead(at, isRead) {
   isRead ? s.add(at) : s.delete(at);
   const cut = Date.now() - 60 * 864e5;                       // 顺手清掉60天前的旧记录，避免无限增长
   localStorage.setItem(READ_KEY, JSON.stringify([...s].filter(x => x >= cut)));
-  save();                                                    // 随我的云文档同步到我的其它设备
-  renderBoard();
+  renderBoard();                                             // 只更新本地视图，不推云端
 }
 
 // TA的留言：读"另一个档案"的同步码（如果这台设备配置过），直接拉云端文档
@@ -705,40 +700,32 @@ document.getElementById("msgInput").addEventListener("keydown", e => {
 
 function startOfToday() { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); }
 
-// 一条留言：默认只有干净文字，点一下才展开操作
-//   对方的留言 → [✓已读] / 历史里 [↩未读]（已读概念只对"收到的"留言成立）
-//   自己的留言 → [🗑删除]（自己写的不需要"已读"）
+// 一条留言：文字 + [✓已读/↩未读] + [✕删除(仅自己的)]
 function msgLine(m, otherP, inHistory) {
   const line = document.createElement("div");
   line.className = "msg" + (m.mine ? "" : " other");
-
   const span = document.createElement("span");
-  span.style.cursor = "pointer";
-  span.title = "点一下展开操作";
   span.textContent =
     `${m.mine ? "💬" : "👀"} ${profileLabel(m.mine ? profile : otherP)}：${m.text}（${ago(m.at)}）`;
-  span.onclick = () => {
-    expandedMsgs.has(m.at) ? expandedMsgs.delete(m.at) : expandedMsgs.add(m.at);
-    renderBoard();
-  };
   line.append(span);
 
-  if (expandedMsgs.has(m.at)) {
-    const btn = document.createElement("button");
-    btn.className = "msg-act";
-    if (!m.mine) {
-      btn.textContent = inHistory ? "↩ 未读" : "✓ 已读";
-      btn.onclick = () => { expandedMsgs.delete(m.at); setRead(m.at, !inHistory); };
-    } else {
-      btn.textContent = "🗑 删除";
-      btn.onclick = () => {
-        expandedMsgs.delete(m.at);
-        localStorage.setItem(MSG_KEY, JSON.stringify(getMsgs().filter(x => x.at !== m.at)));
-        save();
-        renderBoard();
-      };
-    }
-    line.append(btn);
+  const toggle = document.createElement("button");
+  toggle.className = "msg-read";
+  toggle.textContent = inHistory ? "↩" : "✓";
+  toggle.title = inHistory ? "标为未读" : "标记已读";
+  toggle.onclick = () => setRead(m.at, !inHistory);
+  line.append(toggle);
+
+  if (m.mine) {   // 只能删自己的留言
+    const del = document.createElement("button");
+    del.textContent = "✕";
+    del.title = "删除";
+    del.onclick = () => {
+      localStorage.setItem(MSG_KEY, JSON.stringify(getMsgs().filter(x => x.at !== m.at)));
+      save();
+      renderBoard();
+    };
+    line.append(del);
   }
   return line;
 }
@@ -751,10 +738,9 @@ function renderBoard() {
   const theirs = otherMsgsCache.filter(m => m.at >= t0).map(m => ({ ...m, mine: false }));
   const all = mine.concat(theirs).sort((a, b) => b.at - a.at);   // 两人合并成一条时间线
 
-  // 已读只对"对方的留言"成立；自己的留言永远留在留言板，不进历史
   const read = getReadSet();
-  const unread = all.filter(m => m.mine || !read.has(m.at));
-  const history = all.filter(m => !m.mine && read.has(m.at));
+  const unread = all.filter(m => !read.has(m.at));
+  const history = all.filter(m => read.has(m.at));
 
   // 未读：正常展示在留言板
   const list = document.getElementById("msgList");
@@ -1057,7 +1043,6 @@ document.getElementById("pageTitle").onclick = () => {
 };
 
 const expandedSubs = new Set();   // 记住哪些任务的步骤面板展开着（只在本次打开期间有效）
-const expandedMsgs = new Set();   // 哪些留言展开了操作（点一下留言才露出✓已读/🗑删除）
 
 function subsPanel(t) {
   const panel = document.createElement("div");
@@ -1532,7 +1517,6 @@ async function pushCloud() {
         status: getMsgs()[0] || null,   // 兼容：对方还没刷新到新版时也能看到最新一条
         doing: getDoing(),
         log: getLog(),
-        read: JSON.parse(localStorage.getItem(READ_KEY) || "[]"),   // 已读留言随我的文档同步到我的其它设备
       }),
     });
     if (!res.ok) throw 0;
@@ -1567,7 +1551,6 @@ async function pullCloud() {
         renderDoing();
       }
       if (doc.log) { localStorage.setItem(LOG_KEY, JSON.stringify(doc.log)); renderReview(); }
-      if (doc.read) { localStorage.setItem(READ_KEY, JSON.stringify(doc.read)); renderBoard(); }
       const before = JSON.stringify(tasks);
       fixOldTasks(tasks);
       resetDailyTasks(tasks);
@@ -1702,7 +1685,6 @@ function loadProfileState() {
   if (JSON.stringify(tasks) !== before) save();
   // 清掉上个档案的界面状态
   expandedSubs.clear();
-  expandedMsgs.clear();
   // 旧版的单条状态迁移成留言列表（只发生一次）
   if (!localStorage.getItem(MSG_KEY)) {
     const old = JSON.parse(localStorage.getItem(STATUS_KEY) || "null");
