@@ -316,27 +316,15 @@
         <input type="number" id="fTimes" min="1" max="50" value="8">
         <span>次</span>
       </div>
-      <label style="cursor:pointer;font-weight:normal;margin-top:8px">
-        <input type="checkbox" id="fTrack"> 完成后保留·显示上次时间（不自动重置）
-      </label>
     </div>
     <div id="dueWrap" style="display:none">
       <label>截止日期（可不填，按它倒计时）</label>
       <input type="date" id="fDue">
     </div>
-    <div id="repeatWrap" style="display:none">
+    <div id="trackWrap">
       <label style="cursor:pointer;font-weight:normal;margin-top:8px">
-        <input type="checkbox" id="fRepeat"> 完成后自动重置（可重复做）
+        <input type="checkbox" id="fTrack"> 完成后保留·显示上次时间（不自动重置）
       </label>
-      <div class="edit-row" style="margin-top:0;display:none" id="fRepeatFreq">
-        <span>每</span>
-        <select id="fRepeatPeriod">
-          <option value="天">天</option>
-          <option value="周">周</option>
-          <option value="月">月</option>
-        </select>
-        <span>重置</span>
-      </div>
     </div>
     <br>
     <button type="submit" class="primary big">添加</button>
@@ -492,16 +480,13 @@ function fixOldTasks(list) {
     if (t.due === undefined) t.due = "";     // 近期任务的到期日（倒计时）
     if (t.period === undefined) t.period = "天";   // 频率单位：天/周/月，旧任务都是每天
     if (t.track === undefined) t.track = false;    // true=完成后保留不重置，只显示上次时间
-    if (t.repeat === undefined) t.repeat = false;  // 近期/兴趣：true=完成后按period自动重置，可重复做
   }
 }
 
 function resetDailyTasks(list) {
   // 进入新周期（新的一天/一周/一月）就复原；周期内保持原状
   for (const t of list) {
-    // 日常默认重置(track除外)；近期/兴趣勾了repeat才重置
-    const resets = t.category === "日常" ? !t.track : t.repeat;
-    if (!resets) continue;
+    if (t.category !== "日常" || t.track) continue;   // track任务不自动重置
     if (!t.last_done || periodKey(t.last_done, t.period) !== periodKey(todayStr(), t.period)) {
       t.done = false;
       t.left = t.times;
@@ -1193,7 +1178,6 @@ function taskCard(t) {
   const info = document.createElement("div");
   info.className = "info";
   const mark = (t.category === "近期" && t.priority === 1) ? "🎯 " : "";
-  const rep = (t.category !== "日常" && t.repeat) ? "🔁 " : "";   // 自动重置的近期/兴趣任务
   let fire = "";
   if (t.category === "日常" && t.streak >= 2 && t.last_full) {
     // 上个周期做满、本周期还没做完 → 提示连击待续
@@ -1203,7 +1187,7 @@ function taskCard(t) {
     }
   }
   info.innerHTML = `<span class="name"></span>${fire}`;
-  info.querySelector(".name").textContent = `${mark}${rep}${t.name}`;
+  info.querySelector(".name").textContent = `${mark}${t.name}`;
   // 近期任务的倒计时（中性灰色小字，超期也不用红色吓人）
   if (t.category === "近期" && t.due) {
     const d = daysUntil(t.due);
@@ -1332,8 +1316,8 @@ function editPanel(t) {
   }
   panel.append(optRow);
 
-  // 日常任务的"完成后保留"开关
-  if (t.category === "日常") {
+  // "完成后保留·显示上次时间（不自动重置）"开关——三类任务通用，和日常一致
+  {
     const trackRow = document.createElement("label");
     trackRow.className = "edit-row";
     trackRow.style.cursor = "pointer";
@@ -1343,36 +1327,6 @@ function editPanel(t) {
     box.onchange = () => { t.track = box.checked; save(); render(); };
     trackRow.append(box, document.createTextNode("完成后保留·显示上次时间（不自动重置）"));
     panel.append(trackRow);
-  }
-
-  // 近期/兴趣任务的"完成后自动重置"开关（勾了才露出周期选择）
-  if (t.category === "近期" || t.category === "兴趣") {
-    const repRow = document.createElement("div");
-    repRow.className = "edit-row";
-    const lab = document.createElement("label");
-    lab.style.cssText = "display:flex;align-items:center;gap:6px;cursor:pointer;margin:0;flex:0 0 auto";
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.checked = !!t.repeat;
-    box.onchange = () => { t.repeat = box.checked; save(); render(); };
-    lab.append(box, document.createTextNode("完成后自动重置"));
-    repRow.append(lab);
-    if (t.repeat) {
-      const pre = document.createElement("span");
-      pre.textContent = "，每";
-      const sel = document.createElement("select");
-      for (const p of ["天", "周", "月"]) {
-        const o = document.createElement("option");
-        o.value = o.textContent = p;
-        if (p === t.period) o.selected = true;
-        sel.append(o);
-      }
-      sel.onchange = () => { t.period = sel.value; save(); render(); };
-      const post = document.createElement("span");
-      post.textContent = "重置";
-      repRow.append(pre, sel, post);
-    }
-    panel.append(repRow);
   }
 
   // 备注清单；"放弃"垃圾桶放进备注输入行的最右边（排序改为在列表里拖动把手）
@@ -1492,17 +1446,25 @@ function render() {
   // 分区顺序：近一周 → Upcoming（折叠）→ 日常 → 兴趣（折叠）
   const week = recent.filter(t => !isUpcoming(t));
   const upcoming = recent.filter(isUpcoming);
+  const recentTrackDone = recentDone.filter(t => t.track);    // 完成后保留的，标"N天前"直接显示
+  const recentOtherDone = recentDone.filter(t => !t.track);   // 普通完成的，收进"已完成"折叠
   if (week.length || upcoming.length || recentDone.length) {
-    if (week.length) section(main, "📌 近一周", week);
+    if (week.length || recentTrackDone.length) {
+      const h = document.createElement("h2");
+      h.textContent = "📌 近一周";
+      main.append(h);
+      week.forEach(t => main.append(taskCard(t)));
+      recentTrackDone.forEach(t => main.append(doneLine(t)));   // 点它才重新开始
+    }
     if (upcoming.length) {
       // 一周以外的事先收起来；日子临近7天时会自动浮上来到"近一周"
       const det = fold(`🗓 Upcoming（${upcoming.length}）· 一周以后`, "fold section", "upcomingOpen");
       upcoming.forEach(t => det.append(taskCard(t)));
       main.append(det);
     }
-    if (recentDone.length) {
-      const det = fold(`✅ 已完成（${recentDone.length}）`, "fold", "recentDoneOpen");
-      recentDone.forEach(t => det.append(doneLine(t)));
+    if (recentOtherDone.length) {
+      const det = fold(`✅ 已完成（${recentOtherDone.length}）`, "fold", "recentDoneOpen");
+      recentOtherDone.forEach(t => det.append(doneLine(t)));
       main.append(det);
     }
   }
@@ -1537,12 +1499,7 @@ document.getElementById("catRow").addEventListener("change", () => {
   const cat = document.querySelector('input[name="cat"]:checked').value;
   document.getElementById("timesWrap").style.display = cat === "日常" ? "" : "none";
   document.getElementById("dueWrap").style.display = cat === "近期" ? "" : "none";
-  document.getElementById("repeatWrap").style.display = (cat === "近期" || cat === "兴趣") ? "" : "none";
-});
-
-document.getElementById("fRepeat").addEventListener("change", () => {
-  document.getElementById("fRepeatFreq").style.display =
-    document.getElementById("fRepeat").checked ? "" : "none";
+  // trackWrap（完成后保留）三类通用，始终显示
 });
 
 document.getElementById("fPeriod").addEventListener("change", () => {
@@ -1562,26 +1519,21 @@ document.getElementById("addForm").addEventListener("submit", e => {
   const category = document.querySelector('input[name="cat"]:checked').value;
   const times = category === "日常"
     ? Math.max(1, parseInt(document.getElementById("fTimes").value) || 8) : 1;
-  const track = category === "日常" && document.getElementById("fTrack").checked;
-  // 近期/兴趣：勾了"完成后自动重置"就按选的周期重置
-  const repeat = (category === "近期" || category === "兴趣") && document.getElementById("fRepeat").checked;
-  const period = category === "日常" ? document.getElementById("fPeriod").value
-    : (repeat ? document.getElementById("fRepeatPeriod").value : "天");
+  const track = document.getElementById("fTrack").checked;   // 三类任务通用
+  const period = category === "日常" ? document.getElementById("fPeriod").value : "天";
   // 日期输入框的值本身就是 "YYYY-MM-DD"，和内部存储格式一致
   const dueRaw = document.getElementById("fDue").value;
   const due = (category === "近期" && dueRaw) ? dueRaw : "";
   tasks.push({
     name, category,
     priority: parseInt(document.getElementById("fPriority").value),
-    times, left: times, period, track, repeat, done: false,
+    times, left: times, period, track, done: false,
     last_done: "", streak: 0, last_full: "",
     subs: [], due,
   });
   document.getElementById("fDue").value = "";
   document.getElementById("fTrack").checked = false;
   document.getElementById("fFreqRow").style.display = "";
-  document.getElementById("fRepeat").checked = false;
-  document.getElementById("fRepeatFreq").style.display = "none";
   save(); render();
   flash(`✅ 已添加到【${category}】：${name}`);
   document.getElementById("fName").value = "";
