@@ -415,7 +415,7 @@ function checkIn(t) {
       const prevKey = periodKey(dayBefore(curKey), t.period);
       t.streak = (t.last_full && periodKey(t.last_full, t.period) === prevKey) ? t.streak + 1 : 1;
       t.last_full = todayStr();
-      const fire = t.streak >= 2 ? `　🔥连续${t.streak}${unitOf(t.period)}！` : "";
+      const fire = t.streak >= 2 ? `　🌱连续${t.streak}${unitOf(t.period)}！` : "";
       flash(`✅ 完成：${t.name}，干得漂亮！${fire}`);
     } else {
       flash(`✅ 完成：${t.name}，干得漂亮！`);
@@ -646,7 +646,7 @@ function taskCard(t) {
     // 上个周期做满、本周期还没做完 → 提示连击待续
     const prevKey = periodKey(dayBefore(periodKey(todayStr(), t.period)), t.period);
     if (periodKey(t.last_full, t.period) === prevKey) {
-      fire = ` <span class="fire">🔥${t.streak}${unitOf(t.period)}连击中</span>`;
+      fire = ` <span class="fire">🌱${t.streak}${unitOf(t.period)}连续中</span>`;
     }
   }
   info.innerHTML = `<span class="name"></span>${fire}`;
@@ -839,7 +839,7 @@ function doneLine(t) {
   const line = document.createElement("div");
   line.className = "done-line";
   line.title = "点击还原";
-  const fire = (t.category === "日常" && !t.track && t.streak >= 2) ? ` 🔥×${t.streak}` : "";
+  const fire = (t.category === "日常" && !t.track && t.streak >= 2) ? ` 🌱×${t.streak}` : "";
   // "完成后保留"的任务，名字后面标"N天前"
   const ago = (t.track && t.last_done) ? ` <span class="due">${agoText(t.last_done)}</span>` : "";
   line.innerHTML = `✅ <s></s>${fire}${ago}`;
