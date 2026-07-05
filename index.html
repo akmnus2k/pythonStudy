@@ -52,12 +52,6 @@
   .edit-row select { padding: 8px; border: 1px solid var(--soft); border-radius: 8px;
                      background: var(--bg); color: var(--text); font-size: 0.95rem; }
   .edit-row input[type=number] { width: 70px; padding: 8px; }
-  .panel-actions { display: flex; gap: 6px; margin-top: 10px; align-items: center; }
-  .panel-actions .spacer { flex: 1; }
-  .panel-actions button {
-    font-size: 0.85rem; color: var(--muted);
-    background: var(--bg); border: 1px solid var(--soft);
-  }
 
   .subs { margin-top: 8px; border-top: 1px solid var(--soft); padding-top: 8px; }
   .sub-line { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 0.92rem; }
@@ -193,19 +187,23 @@
   .doing-btn { background: var(--soft); color: var(--text-strong); padding: 8px 12px; font-size: 1rem; }
   .check-btn { background: var(--soft); color: var(--text-strong); padding: 8px 13px; font-size: 1rem; font-weight: 700; }
 
-  /* 拖拽把手：按住它上下拖动排序 */
+  /* 拖拽把手：按住↕上下拖动排序 */
   .drag-handle {
     flex: 0 0 auto; align-self: stretch; display: flex; align-items: center;
     padding: 0 6px; margin: -8px 4px -8px -6px;   /* 抵消卡片内边距，加大触摸热区 */
-    color: var(--muted); font-size: 1.15rem; line-height: 1;
-    cursor: grab; user-select: none;
+    color: var(--muted); cursor: grab; user-select: none;
     touch-action: none;   /* 关键：按住把手拖动时不让页面滚动 */
   }
   .drag-handle:active { cursor: grabbing; }
-  .card.dragging {
-    outline: 2px solid var(--primary-dark); outline-offset: -1px;
-    box-shadow: 0 6px 18px rgba(44, 74, 94, 0.22); opacity: 0.92;
+  .drag-handle .grip { display: block; }
+  /* 拖动中：被拖卡片跟手浮起，其余卡片平滑让位 */
+  .drag-shift { transition: transform 0.18s ease; will-change: transform; }
+  .card.drag-float {
+    position: relative; z-index: 20; opacity: 0.96; will-change: transform;
+    box-shadow: 0 8px 22px rgba(44, 74, 94, 0.25); cursor: grabbing;
   }
+  /* 备注行右侧的"放弃"垃圾桶 */
+  .trash-btn { flex: 0 0 auto; background: none; color: var(--muted); padding: 8px 6px; font-size: 1rem; }
 
   /* 留言板：两人的状态和留言合并成一条时间线 */
   #statusBox {
@@ -476,22 +474,31 @@ function visibleTasks() {
   ];
 }
 
-// ---------- 拖拽排序：按住卡片左侧⠿把手上下拖，同区内实时重排 ----------
-// 手机上 HTML5 draggable 基本失效，改用 pointer 事件，触屏/鼠标通吃。
-// 把捕获放在稳定的 body 上：拖动中会反复 render() 重建卡片，若捕获在把手上
-// 一旦把手被重建就断了；捕获在 body 则不受影响。事件照样冒泡到 document。
-let draggingTask = null;
-let dragPointerId = null;
-let dragStartY = 0, dragLastY = 0, dragActive = false, dragRaf = 0;
+// ---------- 拖拽排序：按住↕把手上下拖，同区内平滑重排 ----------
+// 手机上 HTML5 draggable 失效，用 pointer 事件。为了丝滑：拖动全程不重建列表，
+// 被拖的卡片用 transform 跟手浮起，其余卡片用 transform+过渡平滑让位，松手才落盘。
+// 指针捕获放在稳定的 body 上，事件冒泡到 document。
+let drag = null;   // 当前拖动会话；null 表示没在拖
 
-function beginDrag(e, t) {
+function beginDrag(e, t, card) {
   if (e.button !== undefined && e.button > 0) return;   // 只响应左键/触摸
   e.preventDefault();
   e.stopPropagation();                                  // 不触发卡片的"打开编辑"
-  draggingTask = t;
-  dragActive = false;
-  dragStartY = dragLastY = e.clientY;
-  dragPointerId = e.pointerId;
+  const group = groupOf(t);
+  const els = [...document.querySelectorAll("#main .card")]
+    .filter(c => c._task && groupOf(c._task) === group);   // 同区卡片，DOM顺序
+  const items = els.map(el => {
+    const r = el.getBoundingClientRect();
+    return { el, task: el._task, center: r.top + r.height / 2 };
+  });
+  const rect = card.getBoundingClientRect();
+  drag = {
+    task: t, card, items,
+    dragIndex: els.indexOf(card), newIndex: els.indexOf(card),
+    startY: e.clientY, origCenter: rect.top + rect.height / 2,
+    outerH: rect.height + 8,   // 卡片高度+间距=让位时其余卡片挪动的量
+    active: false, pointerId: e.pointerId,
+  };
   try { document.body.setPointerCapture(e.pointerId); } catch (_) {}
   document.addEventListener("pointermove", onDragMove);
   document.addEventListener("pointerup", endDrag);
@@ -499,48 +506,54 @@ function beginDrag(e, t) {
 }
 
 function onDragMove(e) {
-  dragLastY = e.clientY;
-  if (!dragActive) {
-    if (Math.abs(e.clientY - dragStartY) < 6) return;   // 小于6px当成误触，不算拖拽
-    dragActive = true;
-    render();                                           // 给拖动中的卡片加高亮
+  if (!drag) return;
+  const dy = e.clientY - drag.startY;
+  if (!drag.active) {
+    if (Math.abs(dy) < 6) return;                       // 小于6px当误触，不算拖拽
+    drag.active = true;
+    drag.card.classList.add("drag-float");
+    for (const it of drag.items) if (it.el !== drag.card) it.el.classList.add("drag-shift");
   }
-  if (dragRaf) return;                                  // 每帧最多重排一次
-  dragRaf = requestAnimationFrame(() => { dragRaf = 0; dragReorder(dragLastY); });
-}
+  drag.card.style.transform = `translateY(${dy}px)`;    // 被拖卡片跟手
+  const center = drag.origCenter + dy;
 
-function dragReorder(clientY) {
-  if (!draggingTask) return;
-  const group = groupOf(draggingTask);
-  const cards = [...document.querySelectorAll("#main .card")]
-    .filter(c => c._task && groupOf(c._task) === group);   // 只在同区内重排
-  if (!cards.length) return;
-  let target = null, before = true;
-  for (const c of cards) {
-    const r = c.getBoundingClientRect();
-    if (clientY < r.top + r.height / 2) { target = c._task; before = true; break; }
-  }
-  if (!target) { target = cards[cards.length - 1]._task; before = false; }   // 拖到最下面
-  if (target === draggingTask) return;
-  const from = tasks.indexOf(draggingTask);
-  tasks.splice(from, 1);
-  let to = tasks.indexOf(target);
-  if (!before) to += 1;
-  tasks.splice(to, 0, draggingTask);
-  render();                                             // 实时重排，拖完再落盘
+  // 落点 = 有几张别的卡片中心在被拖卡片中心之上
+  let idx = 0;
+  for (const it of drag.items) { if (it.el === drag.card) continue; if (center > it.center) idx++; }
+  if (idx === drag.newIndex) return;
+  drag.newIndex = idx;
+  const { dragIndex, outerH } = drag;
+  drag.items.forEach((it, i) => {
+    if (it.el === drag.card) return;
+    let shift = 0;
+    if (idx > dragIndex && i > dragIndex && i <= idx) shift = -outerH;        // 向下拖：中间的卡片上移让位
+    else if (idx < dragIndex && i >= idx && i < dragIndex) shift = outerH;    // 向上拖：中间的卡片下移让位
+    it.el.style.transform = shift ? `translateY(${shift}px)` : "";
+  });
 }
 
 function endDrag() {
   document.removeEventListener("pointermove", onDragMove);
   document.removeEventListener("pointerup", endDrag);
   document.removeEventListener("pointercancel", endDrag);
-  if (dragRaf) { cancelAnimationFrame(dragRaf); dragRaf = 0; }
-  try { if (dragPointerId != null) document.body.releasePointerCapture(dragPointerId); } catch (_) {}
-  dragPointerId = null;
-  const moved = dragActive && !!draggingTask;
-  draggingTask = null;
-  dragActive = false;
-  if (moved) { save(); render(); }                      // 落盘 + 去掉高亮
+  if (!drag) return;
+  try { if (drag.pointerId != null) document.body.releasePointerCapture(drag.pointerId); } catch (_) {}
+  const d = drag;
+  drag = null;
+  d.card.classList.remove("drag-float");
+  d.card.style.transform = "";
+  for (const it of d.items) { it.el.classList.remove("drag-shift"); it.el.style.transform = ""; }
+  if (!d.active || d.newIndex === d.dragIndex) return;   // 没真的移动就到此为止
+
+  // 落盘：本组任务按新顺序写回它们在 tasks[] 里占的那些位置，其它任务原地不动
+  const groupTasks = d.items.map(it => it.task);
+  const newOrder = groupTasks.slice();
+  newOrder.splice(newOrder.indexOf(d.task), 1);
+  newOrder.splice(d.newIndex, 0, d.task);
+  let k = 0;
+  for (let i = 0; i < tasks.length; i++) if (groupTasks.includes(tasks[i])) tasks[i] = newOrder[k++];
+  save();
+  render();
 }
 
 // 完成流水：每打卡一次记一条，只留最近60天，供"回顾"按天统计
@@ -1038,7 +1051,7 @@ function subsPanel(t) {
 
 function taskCard(t) {
   const card = document.createElement("div");
-  card.className = "card" + (draggingTask === t ? " dragging" : "");
+  card.className = "card";
   card._task = t;   // 供拖拽时按DOM查找同区卡片
 
   const row = document.createElement("div");
@@ -1046,9 +1059,11 @@ function taskCard(t) {
 
   const handle = document.createElement("div");
   handle.className = "drag-handle";
-  handle.textContent = "⠿";
   handle.title = "按住上下拖动排序";
-  handle.addEventListener("pointerdown", e => beginDrag(e, t));
+  handle.innerHTML = '<svg class="grip" viewBox="0 0 24 24" width="16" height="16" fill="none" ' +
+    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+    '<polyline points="8 9 12 5 16 9"></polyline><polyline points="8 15 12 19 16 15"></polyline></svg>';
+  handle.addEventListener("pointerdown", e => beginDrag(e, t, card));
 
   const info = document.createElement("div");
   info.className = "info";
@@ -1204,16 +1219,12 @@ function editPanel(t) {
     panel.append(trackRow);
   }
 
-  // 备注清单
-  panel.append(subsPanel(t));
-
-  // 放弃（排序改为在列表里按住 ⠿ 把手拖动）
-  const actions = document.createElement("div");
-  actions.className = "panel-actions";
-  const spacer = document.createElement("div");
-  spacer.className = "spacer";
+  // 备注清单；"放弃"垃圾桶放进备注输入行的最右边（排序改为在列表里拖动把手）
+  const subs = subsPanel(t);
   const drop = document.createElement("button");
-  drop.textContent = "🗑 放弃";
+  drop.className = "trash-btn";
+  drop.textContent = "🗑";
+  drop.title = "放弃这个任务";
   drop.onclick = () => {
     if (confirm(`确定放弃「${t.name}」？`)) {
       tasks.splice(tasks.indexOf(t), 1);
@@ -1221,8 +1232,8 @@ function editPanel(t) {
       flash(`🗑 已放弃：${t.name}。放弃也是决策，给大脑腾地方 👍`);
     }
   };
-  actions.append(spacer, drop);
-  panel.append(actions);
+  subs.querySelector(".sub-add").append(drop);
+  panel.append(subs);
 
   return panel;
 }
