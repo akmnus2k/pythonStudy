@@ -147,7 +147,9 @@
     border: none; border-bottom: 2px solid var(--text-strong);
     background: transparent; outline: none; padding: 0;
   }
-  .doing-btn { background: var(--soft); color: var(--text-strong); }
+  /* 卡片上两个图标方框按钮：▶ 在做、✓ 完成 */
+  .doing-btn { background: var(--soft); color: var(--text-strong); padding: 8px 12px; font-size: 1rem; }
+  .check-btn { background: #7FC29B; color: #fff; padding: 8px 13px; font-size: 1rem; font-weight: 700; }
 
   /* 留言板：两人的状态和留言合并成一条时间线 */
   #statusBox {
@@ -779,13 +781,14 @@ function taskCard(t) {
 
   const doingBtn = document.createElement("button");
   doingBtn.className = "doing-btn";
-  doingBtn.textContent = "▶ 在做";
+  doingBtn.textContent = "▶";
   doingBtn.title = "标记我正在做这件事";
   doingBtn.onclick = () => setDoing(t);
 
   const btn = document.createElement("button");
-  btn.className = "primary";
-  btn.textContent = "打卡";
+  btn.className = "check-btn";
+  btn.textContent = "✓";
+  btn.title = "打卡完成";
   btn.onclick = () => checkIn(t);
 
   row.append(info, doingBtn, btn);
@@ -1040,7 +1043,7 @@ function render() {
 
   // 兴趣区默认折叠：闲暇时才需要打开看；完成的也保留在里面，点击可还原
   if (interest.length || interestDone.length) {
-    const det = fold(`💡 兴趣 & 探索（${interest.length}）`, "fold section", "interestOpen");
+    const det = fold(`💡 兴趣（${interest.length}）`, "fold section", "interestOpen");
     interest.forEach(t => det.append(taskCard(t)));
     interestDone.forEach(t => det.append(doneLine(t)));
     main.append(det);
