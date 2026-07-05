@@ -222,7 +222,7 @@
     </select>
     <div id="timesWrap">
       <label>频率</label>
-      <div class="edit-row" style="margin-top:0">
+      <div class="edit-row" style="margin-top:0" id="fFreqRow">
         <span>每</span>
         <select id="fPeriod">
           <option value="天">天</option>
@@ -232,6 +232,9 @@
         <input type="number" id="fTimes" min="1" max="50" value="8">
         <span>次</span>
       </div>
+      <label style="cursor:pointer;font-weight:normal;margin-top:8px">
+        <input type="checkbox" id="fTrack"> 完成后保留·显示上次时间（不自动重置）
+      </label>
     </div>
     <div id="dueWrap" style="display:none">
       <label>截止日期（可不填，按它倒计时）</label>
@@ -310,6 +313,10 @@ const dayBefore = ds => {
 
 const unitOf = p => p === "月" ? "个月" : p;   // 连续3天/3周/3个月
 
+// 某天距今几天 + 文字（用于"完成后保留"的任务）
+const daysAgo = ds => Math.round((parseDate(todayStr()) - parseDate(ds)) / 864e5);
+const agoText = ds => { const n = daysAgo(ds); return n <= 0 ? "今天" : `${n}天前`; };
+
 // ---------- 数据（与Python版tasks.json字段完全一致，可互相导入导出） ----------
 // ---------- 双人档案：我的/她的，所有存储键按档案加后缀，数据完全独立 ----------
 let profile = localStorage.getItem("adhd_profile") || "1";
@@ -351,13 +358,14 @@ function fixOldTasks(list) {
     if (t.subs === undefined) t.subs = [];   // 备注/分解步骤 [{name, done}]
     if (t.due === undefined) t.due = "";     // 近期任务的到期日（倒计时）
     if (t.period === undefined) t.period = "天";   // 频率单位：天/周/月，旧任务都是每天
+    if (t.track === undefined) t.track = false;    // true=完成后保留不重置，只显示上次时间
   }
 }
 
 function resetDailyTasks(list) {
   // 进入新周期（新的一天/一周/一月）就复原；周期内保持原状
   for (const t of list) {
-    if (t.category !== "日常") continue;
+    if (t.category !== "日常" || t.track) continue;   // track任务不自动重置
     if (!t.last_done || periodKey(t.last_done, t.period) !== periodKey(todayStr(), t.period)) {
       t.done = false;
       t.left = t.times;
@@ -401,7 +409,7 @@ function checkIn(t) {
     flash(`👍 ${t.name} +1（${t.times - t.left}/${t.times}）`);
   } else {
     t.done = true;
-    if (t.category === "日常") {
+    if (t.category === "日常" && !t.track) {
       // streak按周期数：上个周期（昨天/上周/上月）也做满了就+1，否则从1重新数
       const curKey = periodKey(todayStr(), t.period);
       const prevKey = periodKey(dayBefore(curKey), t.period);
@@ -745,7 +753,7 @@ function editPanel(t) {
     };
     const post = document.createElement("span");
     post.textContent = "次";
-    optRow.append(pre, periodSel, timesInput, post);
+    if (!t.track) optRow.append(pre, periodSel, timesInput, post);   // track模式没有频率概念
   }
 
   if (t.category === "近期") {
@@ -763,6 +771,19 @@ function editPanel(t) {
     optRow.append(pre, dueInput, post);
   }
   panel.append(optRow);
+
+  // 日常任务的"完成后保留"开关
+  if (t.category === "日常") {
+    const trackRow = document.createElement("label");
+    trackRow.className = "edit-row";
+    trackRow.style.cursor = "pointer";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = !!t.track;
+    box.onchange = () => { t.track = box.checked; save(); render(); };
+    trackRow.append(box, document.createTextNode("完成后保留·显示上次时间（不自动重置）"));
+    panel.append(trackRow);
+  }
 
   // 备注清单
   panel.append(subsPanel(t));
@@ -805,7 +826,7 @@ function restoreTask(t) {
   t.done = false;
   if (t.left <= 0) t.left = 1;
   const curKey = t.category === "日常" ? periodKey(todayStr(), t.period) : "";
-  if (t.category === "日常" && t.last_full && periodKey(t.last_full, t.period) === curKey) {
+  if (t.category === "日常" && !t.track && t.last_full && periodKey(t.last_full, t.period) === curKey) {
     // 本周期刚给的连击也一并撤回；streak-1>0说明上个周期做满过，last_full回到上个周期正好
     t.streak = Math.max(t.streak - 1, 0);
     t.last_full = t.streak > 0 ? dayBefore(curKey) : "";
@@ -818,9 +839,12 @@ function doneLine(t) {
   const line = document.createElement("div");
   line.className = "done-line";
   line.title = "点击还原";
-  const fire = (t.category === "日常" && t.streak >= 2) ? ` 🔥×${t.streak}` : "";
-  line.innerHTML = `✅ <s></s>${fire}`;
+  const fire = (t.category === "日常" && !t.track && t.streak >= 2) ? ` 🔥×${t.streak}` : "";
+  // "完成后保留"的任务，名字后面标"N天前"
+  const ago = (t.track && t.last_done) ? ` <span class="due">${agoText(t.last_done)}</span>` : "";
+  line.innerHTML = `✅ <s></s>${fire}${ago}`;
   line.querySelector("s").textContent = t.name;
+  line.title = t.track ? "点击重新开始" : "点击还原";
   line.onclick = () => restoreTask(t);
   return line;
 }
@@ -899,11 +923,13 @@ function render() {
 
   if (daily.length || dailyDone.length) {
     section(main, `💙 日常（还剩${daily.length}件）`, daily);
-    // 今天完成的直接亮出来（成就感+可反悔）
-    dailyDone.filter(t => t.last_done === todayStr())
+    // 今天完成的（会重置的）直接亮出来（成就感+可反悔）
+    dailyDone.filter(t => !t.track && t.last_done === todayStr())
              .forEach(t => main.append(doneLine(t)));
+    // "完成后保留"的任务：始终留在这里，标"N天前"，点它才重新开始
+    dailyDone.filter(t => t.track).forEach(t => main.append(doneLine(t)));
     // 周期内早前完成的低频任务（周一洗的床单）休眠折叠，下个周期自动回到待办
-    const dormant = dailyDone.filter(t => t.last_done !== todayStr());
+    const dormant = dailyDone.filter(t => !t.track && t.last_done !== todayStr());
     if (dormant.length) {
       const det = fold(`💤 本周期已完成（${dormant.length}）`, "fold", "dormantOpen");
       dormant.forEach(t => det.append(doneLine(t)));
@@ -953,6 +979,11 @@ document.getElementById("fPeriod").addEventListener("change", () => {
   document.getElementById("fTimes").value =
     document.getElementById("fPeriod").value === "天" ? 8 : 1;
 });
+document.getElementById("fTrack").addEventListener("change", () => {
+  // 勾了"完成后保留"就没有频率概念，把频率行藏起来
+  document.getElementById("fFreqRow").style.display =
+    document.getElementById("fTrack").checked ? "none" : "";
+});
 document.getElementById("addForm").addEventListener("submit", e => {
   e.preventDefault();
   const name = document.getElementById("fName").value.trim();
@@ -961,17 +992,20 @@ document.getElementById("addForm").addEventListener("submit", e => {
   const times = category === "日常"
     ? Math.max(1, parseInt(document.getElementById("fTimes").value) || 8) : 1;
   const period = category === "日常" ? document.getElementById("fPeriod").value : "天";
+  const track = category === "日常" && document.getElementById("fTrack").checked;
   // 日期输入框的值本身就是 "YYYY-MM-DD"，和内部存储格式一致
   const dueRaw = document.getElementById("fDue").value;
   const due = (category === "近期" && dueRaw) ? dueRaw : "";
   tasks.push({
     name, category,
     priority: parseInt(document.getElementById("fPriority").value),
-    times, left: times, period, done: false,
+    times, left: times, period, track, done: false,
     last_done: "", streak: 0, last_full: "",
     subs: [], due,
   });
   document.getElementById("fDue").value = "";
+  document.getElementById("fTrack").checked = false;
+  document.getElementById("fFreqRow").style.display = "";
   save(); render();
   flash(`✅ 已添加到【${category}】：${name}`);
   document.getElementById("fName").value = "";
