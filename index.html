@@ -133,6 +133,22 @@
   }
   #clock .clock-date { font-size: 1.35rem; letter-spacing: normal; }
 
+  /* 正在做：置顶显示"某某正在做什么"，浅蓝底 */
+  #doingBox {
+    background: var(--primary); border-radius: 10px;
+    padding: 8px 12px; margin-bottom: 10px; font-size: 0.92rem; color: var(--text-strong);
+  }
+  .doing-me { display: flex; align-items: center; gap: 6px; }
+  .doing-me > span { flex: 1; cursor: pointer; }
+  .doing-me button { background: rgba(255,255,255,0.55); color: var(--text-strong); padding: 2px 9px; }
+  .doing-other { opacity: 0.75; margin-top: 4px; }
+  .doing-note-input {
+    width: 100%; font: inherit; color: var(--text-strong);
+    border: none; border-bottom: 2px solid var(--text-strong);
+    background: transparent; outline: none; padding: 0;
+  }
+  .doing-btn { background: var(--soft); color: var(--text-strong); }
+
   /* 留言板：两人的状态和留言合并成一条时间线 */
   #statusBox {
     background: var(--soft); border-radius: 10px;
@@ -187,6 +203,7 @@
   <div id="clock" title="点击看日期">--:--</div>
   <button id="pickBtn" class="primary">🎲 帮我选</button>
 </div>
+<div id="doingBox" style="display:none"></div>
 <div id="statusBox">
   <div id="msgInputRow">
     <input id="msgInput" type="text" maxlength="60" placeholder="💬 说点什么…（备课ing、给TA留言）">
@@ -277,7 +294,7 @@ window.addEventListener("error", e => {
   el.style.display = "block";
 });
 
-let KEY, META_KEY, SYNC_KEY, TITLE_KEY, STATUS_KEY, MSG_KEY;   // 具体值按当前档案在applyProfile()里赋
+let KEY, META_KEY, SYNC_KEY, TITLE_KEY, STATUS_KEY, MSG_KEY, DOING_KEY;   // 具体值按当前档案在applyProfile()里赋
 
 // ---------- 日期（用本地时间，不能用toISOString——那是UTC，晚上8点后会差一天） ----------
 const dateStr = d => {
@@ -329,6 +346,7 @@ function applyProfile() {
   TITLE_KEY = "adhd_title" + sfx;            // 自定义清单名称
   STATUS_KEY = "adhd_status" + sfx;          // 旧版单条状态（仅迁移用）
   MSG_KEY = "adhd_msgs" + sfx;               // 留言列表 [{text, at}...] 新的在前
+  DOING_KEY = "adhd_doing" + sfx;            // 正在做 {name, note, at} 或 null
   syncUrl = localStorage.getItem(SYNC_KEY) || "";
 }
 
@@ -422,7 +440,10 @@ function checkIn(t) {
     }
     if (visibleTasks().length === 0) setTimeout(() => flash("🎉 全部完成！去玩吧！"), 1600);
   }
-  save(); render();
+  // 完成的正是"正在做"的事 → 自动结束"正在做"
+  const dg = getDoing();
+  if (t.done && dg && dg.name === t.name) localStorage.removeItem(DOING_KEY);
+  save(); render(); renderDoing();
 }
 
 // ---------- 界面 ----------
@@ -485,14 +506,16 @@ let otherMsgsCache = [];
 async function fetchOtherBoard() {
   const otherSfx = profile === "1" ? "_2" : "";
   const url = localStorage.getItem("adhd_sync_url" + otherSfx) || "";
-  if (!url) { otherMsgsCache = []; renderBoard(); return; }
+  if (!url) { otherMsgsCache = []; otherDoingCache = null; renderBoard(); renderDoing(); return; }
   try {
     const res = await fetch(url);
     const doc = await res.json();
     otherMsgsCache = (doc && doc.messages) ? doc.messages
       : (doc && doc.status && doc.status.text ? [doc.status] : []);
+    otherDoingCache = (doc && doc.doing) ? doc.doing : null;
   } catch { /* 拉不到就保持上次的 */ }
   renderBoard();
+  renderDoing();
 }
 
 function postMsg() {
@@ -553,7 +576,79 @@ function renderBoard() {
 }
 
 // 每分钟重算一次"xx分钟前"的字样（不发网络请求）
-setInterval(renderBoard, 60000);
+setInterval(() => { renderBoard(); renderDoing(); }, 60000);
+
+// ---------- 正在做：点任务的"在做"按钮，置顶显示"某某正在做什么" ----------
+const getDoing = () => JSON.parse(localStorage.getItem(DOING_KEY) || "null");
+let otherDoingCache = null;   // TA正在做的事（从对方档案云文档读来）
+
+function setDoing(t) {
+  localStorage.setItem(DOING_KEY, JSON.stringify({ name: t.name, note: "", at: Date.now() }));
+  save();                    // 随云同步走，TA那边就能看到
+  renderDoing();
+  flash(`▶ 开始：${t.name}`);
+}
+
+function clearDoing() {
+  localStorage.removeItem(DOING_KEY);
+  save();
+  renderDoing();
+}
+
+function editDoingNote() {
+  const mine = getDoing();
+  if (!mine) return;
+  const meRow = document.querySelector("#doingBox .doing-me");
+  if (!meRow || meRow.querySelector("input")) return;
+  meRow.innerHTML = "";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.maxLength = 40;
+  input.value = mine.note || "";
+  input.placeholder = "加个备注，比如：写第三章";
+  input.className = "doing-note-input";
+  meRow.append(input);
+  input.focus();
+  input.onblur = () => {
+    const cur = getDoing();
+    if (cur) { cur.note = input.value.trim(); localStorage.setItem(DOING_KEY, JSON.stringify(cur)); save(); }
+    renderDoing();
+  };
+  input.addEventListener("keydown", e => { if (e.key === "Enter") input.blur(); });
+}
+
+function renderDoing() {
+  const box = document.getElementById("doingBox");
+  const mine = getDoing();
+  const other = otherDoingCache;
+  if (!mine && !other) { box.style.display = "none"; return; }
+  box.style.display = "";
+  box.innerHTML = "";
+  const otherP = profile === "1" ? "2" : "1";
+
+  if (mine) {
+    const row = document.createElement("div");
+    row.className = "doing-me";
+    const span = document.createElement("span");
+    span.title = "点一下加/改备注";
+    span.textContent =
+      `🎯 ${profileLabel(profile)} 正在做：${mine.name}${mine.note ? " · " + mine.note : ""}（${ago(mine.at)}）`;
+    span.onclick = editDoingNote;
+    const x = document.createElement("button");
+    x.textContent = "✕";
+    x.title = "结束";
+    x.onclick = clearDoing;
+    row.append(span, x);
+    box.append(row);
+  }
+  if (other) {
+    const row = document.createElement("div");
+    row.className = "doing-other";
+    row.textContent =
+      `👀 ${profileLabel(otherP)} 正在做：${other.name}${other.note ? " · " + other.note : ""}（${ago(other.at)}）`;
+    box.append(row);
+  }
+}
 
 // ---------- 标题：点击自定义名称 ----------
 function renderTitle() {
@@ -682,12 +777,18 @@ function taskCard(t) {
     render();
   };
 
+  const doingBtn = document.createElement("button");
+  doingBtn.className = "doing-btn";
+  doingBtn.textContent = "▶ 在做";
+  doingBtn.title = "标记我正在做这件事";
+  doingBtn.onclick = () => setDoing(t);
+
   const btn = document.createElement("button");
   btn.className = "primary";
   btn.textContent = "打卡";
   btn.onclick = () => checkIn(t);
 
-  row.append(info, btn);
+  row.append(info, doingBtn, btn);
   card.append(row);
   if (expandedSubs.has(t)) card.append(editPanel(t));
   return card;
@@ -1065,6 +1166,7 @@ async function pushCloud() {
         updated_at: getUpdatedAt(), tasks, title: getTitle(),
         messages: getMsgs(),
         status: getMsgs()[0] || null,   // 兼容：对方还没刷新到新版时也能看到最新一条
+        doing: getDoing(),
       }),
     });
     if (!res.ok) throw 0;
@@ -1092,6 +1194,11 @@ async function pullCloud() {
       } else if (doc.status) {
         localStorage.setItem(MSG_KEY, JSON.stringify([doc.status]));   // 旧格式云端文档
         renderBoard();
+      }
+      if (doc.doing !== undefined) {
+        doc.doing ? localStorage.setItem(DOING_KEY, JSON.stringify(doc.doing))
+                  : localStorage.removeItem(DOING_KEY);
+        renderDoing();
       }
       const before = JSON.stringify(tasks);
       fixOldTasks(tasks);
@@ -1235,8 +1342,10 @@ function loadProfileState() {
     if (old && old.text) localStorage.setItem(MSG_KEY, JSON.stringify([old]));
   }
   ui.boardOpen = false;   // 切档案回到收起状态
+  otherDoingCache = null; // 清掉上个档案的"TA正在做"
   renderTitle();
   renderBoard();
+  renderDoing();
   render();
   renderSyncPanel();
   fetchOtherBoard();
