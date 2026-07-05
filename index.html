@@ -361,7 +361,7 @@ window.addEventListener("error", e => {
   el.style.display = "block";
 });
 
-let KEY, META_KEY, SYNC_KEY, TITLE_KEY, STATUS_KEY, MSG_KEY, DOING_KEY, LOG_KEY, READ_KEY, VAULT_KEY;   // 具体值按当前档案在applyProfile()里赋
+let KEY, META_KEY, SYNC_KEY, TITLE_KEY, STATUS_KEY, MSG_KEY, DOING_KEY, LOG_KEY, READ_KEY, VAULT_KEY, TASK_VAULT_KEY;   // 具体值按当前档案在applyProfile()里赋
 
 // ---------- 日期（用本地时间，不能用toISOString——那是UTC，晚上8点后会差一天） ----------
 const dateStr = d => {
@@ -417,6 +417,7 @@ function applyProfile() {
   LOG_KEY = "adhd_log" + sfx;                // 完成流水 [{name, at}...]，用于每日回顾
   READ_KEY = "adhd_read_msgs" + sfx;         // 已读留言的时间戳集合（仅本机，不走云同步）
   VAULT_KEY = "adhd_msgs_vault" + sfx;       // 留言保险库：只增不改的本地备份，云同步碰不到
+  TASK_VAULT_KEY = "adhd_tasks_vault" + sfx; // 任务保险库：每个任务(按类别+名字)存最新一份，恢复兜底
   syncUrl = localStorage.getItem(SYNC_KEY) || "";
 }
 
@@ -430,10 +431,40 @@ let pushTimer;
 const save = () => {
   localStorage.setItem(KEY, JSON.stringify(tasks));
   localStorage.setItem(META_KEY, String(Date.now()));
+  vaultTasks();   // 每次任务改动都进本地备份库
   // 稍微攒一下再推云端：连点8次打卡只发一次请求
   clearTimeout(pushTimer);
   pushTimer = setTimeout(pushCloud, 400);
 };
+
+// 任务本地备份库：把见过的每个任务(按 类别+名字 归档)存最新一份，云同步碰不到它。
+// 任务被并发覆盖/误删后可从这里找回；被放弃的任务也留档(恢复用)，最多留500个。
+function vaultTasks() {
+  let vault;
+  try { vault = JSON.parse(localStorage.getItem(TASK_VAULT_KEY) || "{}"); } catch (_) { vault = {}; }
+  let changed = false;
+  const now = Date.now();
+  for (const t of tasks) {
+    if (!t || !t.name) continue;
+    const key = (t.category || "") + "" + t.name;
+    const prev = vault[key];
+    if (!prev || JSON.stringify(prev.task) !== JSON.stringify(t)) {
+      vault[key] = { task: t, seen: now };
+      changed = true;
+    } else if (now - (prev.seen || 0) > 36e5) {   // 每小时最多刷新一次"最近见过"，减少写入
+      prev.seen = now;
+      changed = true;
+    }
+  }
+  if (!changed) return;
+  const keys = Object.keys(vault);
+  if (keys.length > 500) {   // 超上限先丢最久没见过的
+    keys.sort((a, b) => (vault[a].seen || 0) - (vault[b].seen || 0))
+        .slice(0, keys.length - 500)
+        .forEach(k => delete vault[k]);
+  }
+  localStorage.setItem(TASK_VAULT_KEY, JSON.stringify(vault));
+}
 
 function fixOldTasks(list) {
   // 不用 ??= 这类新语法：老手机浏览器解析不了会让整个脚本罢工
@@ -1586,6 +1617,7 @@ async function pullCloud() {
       resetDailyTasks(tasks);
       if (JSON.stringify(tasks) !== before) save();   // 重置产生了变化才算新改动
       render();
+      vaultTasks();   // 云端采用后也备份一份（若被并发覆盖，之前的好版本仍在库里）
     } else if (!doc || (doc.updated_at || 0) < getUpdatedAt()) {
       pushCloud();   // 云端是空的或更旧：把本地推上去
       pushed = true;
@@ -1738,6 +1770,7 @@ function loadProfileState() {
   renderDoing();
   renderReview();
   render();
+  vaultTasks();   // 载入后先把当前(好的)任务快照进备份库，再去pull云端
   renderSyncPanel();
   fetchOtherBoard();
   if (syncUrl) { lastPull = Date.now(); pullCloud(); }
