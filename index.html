@@ -222,7 +222,10 @@
   .msg span { flex: 1; }
   .msg.other { color: var(--muted); }
   .msg button { background: none; color: var(--muted); padding: 0 6px; }
-  #msgMore { background: none; color: var(--muted); font-size: 0.8rem; padding: 4px 0 0; }
+  .msg .msg-read { font-size: 0.95rem; color: var(--primary-dark); }
+  /* 历史留言折叠：融进留言板，不要独立卡片边框 */
+  #msgHistory { margin-top: 2px; }
+  #msgHistory details.fold { margin: 0; padding: 4px 0 0; background: transparent; border: none; }
 
   /* 今日战报：正反馈要看得见 */
   #todayDone {
@@ -266,7 +269,7 @@
     <button id="msgSend" class="primary">发送</button>
   </div>
   <div id="msgList"></div>
-  <button id="msgMore" style="display:none"></button>
+  <div id="msgHistory"></div>
 </div>
 <div id="todayDone" style="display:none"></div>
 <div id="reviewModal" class="modal" style="display:none">
@@ -358,7 +361,7 @@ window.addEventListener("error", e => {
   el.style.display = "block";
 });
 
-let KEY, META_KEY, SYNC_KEY, TITLE_KEY, STATUS_KEY, MSG_KEY, DOING_KEY, LOG_KEY;   // 具体值按当前档案在applyProfile()里赋
+let KEY, META_KEY, SYNC_KEY, TITLE_KEY, STATUS_KEY, MSG_KEY, DOING_KEY, LOG_KEY, READ_KEY;   // 具体值按当前档案在applyProfile()里赋
 
 // ---------- 日期（用本地时间，不能用toISOString——那是UTC，晚上8点后会差一天） ----------
 const dateStr = d => {
@@ -412,6 +415,7 @@ function applyProfile() {
   MSG_KEY = "adhd_msgs" + sfx;               // 留言列表 [{text, at}...] 新的在前
   DOING_KEY = "adhd_doing" + sfx;            // 正在做 {name, note, at} 或 null
   LOG_KEY = "adhd_log" + sfx;                // 完成流水 [{name, at}...]，用于每日回顾
+  READ_KEY = "adhd_read_msgs" + sfx;         // 已读留言的时间戳集合（仅本机，不走云同步）
   syncUrl = localStorage.getItem(SYNC_KEY) || "";
 }
 
@@ -646,6 +650,16 @@ function ago(ts) {
 
 const getMsgs = () => JSON.parse(localStorage.getItem(MSG_KEY) || "[]");
 
+// 已读留言：本地记录哪些留言(按at时间戳)已读，读过的折进"历史留言"折叠
+const getReadSet = () => new Set(JSON.parse(localStorage.getItem(READ_KEY) || "[]"));
+function setRead(at, isRead) {
+  const s = getReadSet();
+  isRead ? s.add(at) : s.delete(at);
+  const cut = Date.now() - 60 * 864e5;                       // 顺手清掉60天前的旧记录，避免无限增长
+  localStorage.setItem(READ_KEY, JSON.stringify([...s].filter(x => x >= cut)));
+  renderBoard();                                             // 只更新本地视图，不推云端
+}
+
 // TA的留言：读"另一个档案"的同步码（如果这台设备配置过），直接拉云端文档
 let otherMsgsCache = [];
 let otherLogCache = [];   // TA的完成流水，供"回顾"把两人的已完成合并展示
@@ -686,6 +700,36 @@ document.getElementById("msgInput").addEventListener("keydown", e => {
 
 function startOfToday() { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); }
 
+// 一条留言：文字 + [✓已读/↩未读] + [✕删除(仅自己的)]
+function msgLine(m, otherP, inHistory) {
+  const line = document.createElement("div");
+  line.className = "msg" + (m.mine ? "" : " other");
+  const span = document.createElement("span");
+  span.textContent =
+    `${m.mine ? "💬" : "👀"} ${profileLabel(m.mine ? profile : otherP)}：${m.text}（${ago(m.at)}）`;
+  line.append(span);
+
+  const toggle = document.createElement("button");
+  toggle.className = "msg-read";
+  toggle.textContent = inHistory ? "↩" : "✓";
+  toggle.title = inHistory ? "标为未读" : "标记已读";
+  toggle.onclick = () => setRead(m.at, !inHistory);
+  line.append(toggle);
+
+  if (m.mine) {   // 只能删自己的留言
+    const del = document.createElement("button");
+    del.textContent = "✕";
+    del.title = "删除";
+    del.onclick = () => {
+      localStorage.setItem(MSG_KEY, JSON.stringify(getMsgs().filter(x => x.at !== m.at)));
+      save();
+      renderBoard();
+    };
+    line.append(del);
+  }
+  return line;
+}
+
 function renderBoard() {
   const otherP = profile === "1" ? "2" : "1";
   const t0 = startOfToday();
@@ -694,38 +738,35 @@ function renderBoard() {
   const theirs = otherMsgsCache.filter(m => m.at >= t0).map(m => ({ ...m, mine: false }));
   const all = mine.concat(theirs).sort((a, b) => b.at - a.at);   // 两人合并成一条时间线
 
+  const read = getReadSet();
+  const unread = all.filter(m => !read.has(m.at));
+  const history = all.filter(m => read.has(m.at));
+
+  // 未读：正常展示在留言板
   const list = document.getElementById("msgList");
-  const more = document.getElementById("msgMore");
   list.innerHTML = "";
-
-  const shown = all;
-  for (const m of shown) {
-    const line = document.createElement("div");
-    line.className = "msg" + (m.mine ? "" : " other");
-    const span = document.createElement("span");
-    span.textContent =
-      `${m.mine ? "💬" : "👀"} ${profileLabel(m.mine ? profile : otherP)}：${m.text}（${ago(m.at)}）`;
-    line.append(span);
-    if (m.mine) {   // 只能删自己的留言
-      const del = document.createElement("button");
-      del.textContent = "✕";
-      del.onclick = () => {
-        localStorage.setItem(MSG_KEY, JSON.stringify(getMsgs().filter(x => x.at !== m.at)));
-        save();
-        renderBoard();
-      };
-      line.append(del);
-    }
-    list.append(line);
-  }
-
-  if (!all.length) {
+  for (const m of unread) list.append(msgLine(m, otherP, false));
+  if (!unread.length) {
     const hint = document.createElement("div");
     hint.className = "msg other";
-    hint.textContent = "今天还没有留言";
+    hint.textContent = history.length ? "都读完啦 👍" : "今天还没有留言";
     list.append(hint);
   }
-  more.style.display = "none";   // 历史留言都在"回顾"里，这里不再翻页
+
+  // 已读：折进"历史留言"
+  const hist = document.getElementById("msgHistory");
+  hist.innerHTML = "";
+  if (history.length) {
+    const det = document.createElement("details");
+    det.className = "fold";
+    det.open = ui.msgHistoryOpen;
+    const sum = document.createElement("summary");
+    sum.textContent = `📁 历史留言（${history.length}）`;
+    det.append(sum);
+    det.addEventListener("toggle", () => { ui.msgHistoryOpen = det.open; });
+    for (const m of history) det.append(msgLine(m, otherP, true));
+    hist.append(det);
+  }
 }
 
 // 每分钟重算一次"xx分钟前"的字样（不发网络请求）
@@ -1280,7 +1321,7 @@ function doneLine(t) {
 }
 
 // 折叠组的开合状态（只在本次打开期间记住，刷新后回到默认收起）
-const ui = { recentDoneOpen: false, interestOpen: false, dormantOpen: false, boardOpen: false, upcomingOpen: false };
+const ui = { recentDoneOpen: false, interestOpen: false, dormantOpen: false, boardOpen: false, upcomingOpen: false, msgHistoryOpen: false };
 
 function fold(title, cls, openKey) {
   const det = document.createElement("details");
