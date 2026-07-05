@@ -34,6 +34,7 @@
   button:active { transform: scale(0.98); }
   .primary { background: var(--primary); font-weight: 600; }
   .big { width: 100%; padding: 14px; font-size: 1.05rem; }
+  .active-btn { background: var(--primary-dark); }
 
   .card {
     background: var(--card); border: 1px solid var(--soft);
@@ -89,11 +90,18 @@
     border-radius: 10px; padding: 10px 14px; margin-bottom: 12px;
     display: none; font-weight: 500;
   }
-  #pickBox {
-    background: var(--soft); border-radius: 12px; padding: 12px 14px;
-    margin: 10px 0; display: none; align-items: center; gap: 10px;
+  /* 回顾：按天展示完成情况和留言 */
+  #reviewBox {
+    background: var(--card); border: 1px solid var(--soft); border-radius: 12px;
+    padding: 6px 14px; margin-bottom: 12px; max-height: 55vh; overflow-y: auto;
   }
-  #pickBox .info { flex: 1; }
+  .review-day { padding: 8px 0; border-bottom: 1px solid var(--soft); }
+  .review-day:last-child { border-bottom: none; }
+  .review-date { font-weight: 600; color: var(--text-strong); margin-bottom: 4px; }
+  .review-done { color: var(--text); font-size: 0.9rem; margin: 2px 0; }
+  .review-msg { color: var(--text); font-size: 0.88rem; margin: 2px 0; }
+  .review-msg.other { color: var(--muted); }
+  .review-empty { color: var(--muted); text-align: center; padding: 16px 0; }
 
   details {
     background: var(--card); border: 1px solid var(--soft);
@@ -203,7 +211,7 @@
 
 <div id="topRow">
   <div id="clock" title="点击看日期">--:--</div>
-  <button id="pickBtn" class="primary">🎲 帮我选</button>
+  <button id="reviewBtn" class="primary">📅 回顾</button>
 </div>
 <div id="doingBox" style="display:none"></div>
 <div id="statusBox">
@@ -215,10 +223,7 @@
   <button id="msgMore" style="display:none"></button>
 </div>
 <div id="todayDone" style="display:none"></div>
-<div id="pickBox">
-  <div class="info">🎲 就它了 → <b id="pickName"></b></div>
-  <button id="pickCheckin" class="primary">✅ 打卡</button>
-</div>
+<div id="reviewBox" style="display:none"></div>
 
 <div id="main"></div>
 
@@ -296,7 +301,7 @@ window.addEventListener("error", e => {
   el.style.display = "block";
 });
 
-let KEY, META_KEY, SYNC_KEY, TITLE_KEY, STATUS_KEY, MSG_KEY, DOING_KEY;   // 具体值按当前档案在applyProfile()里赋
+let KEY, META_KEY, SYNC_KEY, TITLE_KEY, STATUS_KEY, MSG_KEY, DOING_KEY, LOG_KEY;   // 具体值按当前档案在applyProfile()里赋
 
 // ---------- 日期（用本地时间，不能用toISOString——那是UTC，晚上8点后会差一天） ----------
 const dateStr = d => {
@@ -349,6 +354,7 @@ function applyProfile() {
   STATUS_KEY = "adhd_status" + sfx;          // 旧版单条状态（仅迁移用）
   MSG_KEY = "adhd_msgs" + sfx;               // 留言列表 [{text, at}...] 新的在前
   DOING_KEY = "adhd_doing" + sfx;            // 正在做 {name, note, at} 或 null
+  LOG_KEY = "adhd_log" + sfx;                // 完成流水 [{name, at}...]，用于每日回顾
   syncUrl = localStorage.getItem(SYNC_KEY) || "";
 }
 
@@ -422,9 +428,19 @@ function moveTask(t, dir) {
   render();
 }
 
+// 完成流水：每打卡一次记一条，只留最近60天，供"回顾"按天统计
+const getLog = () => JSON.parse(localStorage.getItem(LOG_KEY) || "[]");
+function logDone(name) {
+  const cut = Date.now() - 60 * 864e5;
+  const a = getLog().filter(e => e.at >= cut);
+  a.push({ name, at: Date.now() });
+  localStorage.setItem(LOG_KEY, JSON.stringify(a));
+}
+
 function checkIn(t) {
   t.left -= 1;
   t.last_done = todayStr();
+  logDone(t.name);
   if (t.left > 0) {
     flash(`👍 ${t.name} +1（${t.times - t.left}/${t.times}）`);
   } else {
@@ -518,6 +534,7 @@ async function fetchOtherBoard() {
   } catch { /* 拉不到就保持上次的 */ }
   renderBoard();
   renderDoing();
+  renderReview();
 }
 
 function postMsg() {
@@ -530,24 +547,28 @@ function postMsg() {
   input.value = "";
   save();          // 留言随云同步走，TA那边就能看到
   renderBoard();
+  renderReview();
 }
 document.getElementById("msgSend").onclick = postMsg;
 document.getElementById("msgInput").addEventListener("keydown", e => {
   if (e.key === "Enter") postMsg();
 });
 
+function startOfToday() { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); }
+
 function renderBoard() {
   const otherP = profile === "1" ? "2" : "1";
-  const mine = getMsgs().map(m => ({ ...m, mine: true }));
-  const theirs = otherMsgsCache.map(m => ({ ...m, mine: false }));
+  const t0 = startOfToday();
+  // 留言板只展示当天的；更早的都在"回顾"里
+  const mine = getMsgs().filter(m => m.at >= t0).map(m => ({ ...m, mine: true }));
+  const theirs = otherMsgsCache.filter(m => m.at >= t0).map(m => ({ ...m, mine: false }));
   const all = mine.concat(theirs).sort((a, b) => b.at - a.at);   // 两人合并成一条时间线
 
   const list = document.getElementById("msgList");
   const more = document.getElementById("msgMore");
   list.innerHTML = "";
-  list.classList.toggle("expanded", ui.boardOpen);
 
-  const shown = ui.boardOpen ? all : all.slice(0, 3);   // 默认只露最新3条
+  const shown = all;
   for (const m of shown) {
     const line = document.createElement("div");
     line.className = "msg" + (m.mine ? "" : " other");
@@ -568,17 +589,17 @@ function renderBoard() {
     list.append(line);
   }
 
-  if (all.length > 3) {
-    more.style.display = "";
-    more.textContent = ui.boardOpen ? "收起" : `展开全部（${all.length}条）`;
-    more.onclick = () => { ui.boardOpen = !ui.boardOpen; renderBoard(); };
-  } else {
-    more.style.display = "none";
+  if (!all.length) {
+    const hint = document.createElement("div");
+    hint.className = "msg other";
+    hint.textContent = "今天还没有留言";
+    list.append(hint);
   }
+  more.style.display = "none";   // 历史留言都在"回顾"里，这里不再翻页
 }
 
 // 每分钟重算一次"xx分钟前"的字样（不发网络请求）
-setInterval(() => { renderBoard(); renderDoing(); }, 60000);
+setInterval(() => { renderBoard(); renderDoing(); renderReview(); }, 60000);
 
 // ---------- 正在做：点任务的"在做"按钮，置顶显示"某某正在做什么" ----------
 const getDoing = () => JSON.parse(localStorage.getItem(DOING_KEY) || "null");
@@ -649,6 +670,73 @@ function renderDoing() {
     row.textContent =
       `👀 ${profileLabel(otherP)} 正在做：${other.name}${other.note ? " · " + other.note : ""}（${ago(other.at)}）`;
     box.append(row);
+  }
+}
+
+// ---------- 回顾：按天展示完成情况和留言 ----------
+let reviewOpen = false;
+document.getElementById("reviewBtn").onclick = () => { reviewOpen = !reviewOpen; renderReview(); };
+
+function reviewDateLabel(k) {
+  const d = parseDate(k);
+  const week = "日一二三四五六"[d.getDay()];
+  const n = daysAgo(k);
+  const rel = n === 0 ? " · 今天" : (n === 1 ? " · 昨天" : "");
+  return `${d.getMonth() + 1}月${d.getDate()}日 周${week}${rel}`;
+}
+const timeHM = at => { const d = new Date(at), p = n => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}`; };
+
+function renderReview() {
+  const box = document.getElementById("reviewBox");
+  document.getElementById("reviewBtn").classList.toggle("active-btn", reviewOpen);
+  if (!reviewOpen) { box.style.display = "none"; return; }
+  box.style.display = "";
+  box.innerHTML = "";
+  const otherP = profile === "1" ? "2" : "1";
+  const dkey = at => dateStr(new Date(at));
+
+  const days = {};   // "YYYY-MM-DD" -> {done:{名:次数}, msgs:[{text,at,mine}]}
+  const ensure = k => { if (!days[k]) days[k] = { done: {}, msgs: [] }; return days[k]; };
+  for (const e of getLog()) {
+    const d = ensure(dkey(e.at)).done;
+    d[e.name] = (d[e.name] || 0) + 1;
+  }
+  const addMsgs = (arr, mine) => { for (const m of arr) ensure(dkey(m.at)).msgs.push({ text: m.text, at: m.at, mine }); };
+  addMsgs(getMsgs(), true);
+  addMsgs(otherMsgsCache, false);
+
+  const keys = Object.keys(days).sort().reverse();   // 新的在最上
+  if (!keys.length) {
+    box.innerHTML = '<div class="review-empty">还没有记录～完成任务或留言后，这里会按天出现回顾。</div>';
+    return;
+  }
+  for (const k of keys) {
+    const day = days[k];
+    const wrap = document.createElement("div");
+    wrap.className = "review-day";
+
+    const h = document.createElement("div");
+    h.className = "review-date";
+    h.textContent = reviewDateLabel(k);
+    wrap.append(h);
+
+    const names = Object.keys(day.done);
+    if (names.length) {
+      const line = document.createElement("div");
+      line.className = "review-done";
+      line.textContent = "✓ " + names.map(n => day.done[n] > 1 ? `${n}×${day.done[n]}` : n).join(" · ");
+      wrap.append(line);
+    }
+    day.msgs.sort((a, b) => a.at - b.at);
+    for (const m of day.msgs) {
+      const line = document.createElement("div");
+      line.className = "review-msg" + (m.mine ? "" : " other");
+      line.textContent =
+        `${m.mine ? "💬" : "👀"} ${timeHM(m.at)} ${profileLabel(m.mine ? profile : otherP)}：${m.text}`;
+      wrap.append(line);
+    }
+    box.append(wrap);
   }
 }
 
@@ -929,6 +1017,12 @@ function restoreTask(t) {
   // 点已完成的任务 = 撤销最后一次打卡
   t.done = false;
   if (t.left <= 0) t.left = 1;
+  // 把今天这条完成流水也撤掉，回顾才对得上
+  const log = getLog();
+  for (let i = log.length - 1; i >= 0; i--) {
+    if (log[i].name === t.name && dateStr(new Date(log[i].at)) === todayStr()) { log.splice(i, 1); break; }
+  }
+  localStorage.setItem(LOG_KEY, JSON.stringify(log));
   const curKey = t.category === "日常" ? periodKey(todayStr(), t.period) : "";
   if (t.category === "日常" && !t.track && t.last_full && periodKey(t.last_full, t.period) === curKey) {
     // 本周期刚给的连击也一并撤回；streak-1>0说明上个周期做满过，last_full回到上个周期正好
@@ -978,7 +1072,7 @@ function render() {
   const recentDone = tasks.filter(t => t.done && t.category === "近期");
   const interestDone = tasks.filter(t => t.done && t.category === "兴趣");
 
-  document.getElementById("pickBtn").disabled = vis.length === 0;
+  renderReview();   // 回顾开着时，完成/还原后同步刷新
 
   // 今日战报：今天打过卡的都算，日常带次数（喝水×3），一件没做就整条隐藏
   const strip = document.getElementById("todayDone");
@@ -1049,27 +1143,6 @@ function render() {
     main.append(det);
   }
 }
-
-// ---------- 🎲 现在干嘛 ----------
-let picked = null;
-document.getElementById("pickBtn").onclick = () => {
-  const vis = visibleTasks();
-  if (!vis.length) return;
-  // 所有任务机会均等，但不抽Upcoming：一周后才到期的事不该是"现在干嘛"的答案
-  const pool = vis.filter(t => !isUpcoming(t));
-  const from = pool.length ? pool : vis;
-  picked = from[Math.floor(Math.random() * from.length)];
-  document.getElementById("pickName").textContent = picked.name;
-  document.getElementById("pickBox").style.display = "flex";
-};
-document.getElementById("pickCheckin").onclick = () => {
-  if (!picked) return;
-  checkIn(picked);
-  if (picked.done) {
-    picked = null;
-    document.getElementById("pickBox").style.display = "none";
-  }
-};
 
 // ---------- 添加 ----------
 document.getElementById("catRow").addEventListener("change", () => {
@@ -1170,6 +1243,7 @@ async function pushCloud() {
         messages: getMsgs(),
         status: getMsgs()[0] || null,   // 兼容：对方还没刷新到新版时也能看到最新一条
         doing: getDoing(),
+        log: getLog(),
       }),
     });
     if (!res.ok) throw 0;
@@ -1203,6 +1277,7 @@ async function pullCloud() {
                   : localStorage.removeItem(DOING_KEY);
         renderDoing();
       }
+      if (doc.log) { localStorage.setItem(LOG_KEY, JSON.stringify(doc.log)); renderReview(); }
       const before = JSON.stringify(tasks);
       fixOldTasks(tasks);
       resetDailyTasks(tasks);
@@ -1337,18 +1412,17 @@ function loadProfileState() {
   if (JSON.stringify(tasks) !== before) save();
   // 清掉上个档案的界面状态
   expandedSubs.clear();
-  picked = null;
-  document.getElementById("pickBox").style.display = "none";
   // 旧版的单条状态迁移成留言列表（只发生一次）
   if (!localStorage.getItem(MSG_KEY)) {
     const old = JSON.parse(localStorage.getItem(STATUS_KEY) || "null");
     if (old && old.text) localStorage.setItem(MSG_KEY, JSON.stringify([old]));
   }
-  ui.boardOpen = false;   // 切档案回到收起状态
+  reviewOpen = false;     // 切档案回到收起状态
   otherDoingCache = null; // 清掉上个档案的"TA正在做"
   renderTitle();
   renderBoard();
   renderDoing();
+  renderReview();
   render();
   renderSyncPanel();
   fetchOtherBoard();
