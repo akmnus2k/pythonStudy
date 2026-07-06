@@ -162,13 +162,13 @@
 
   /* 顶部：大时钟（对抗时间盲）+ 缩小版🎲 */
   #topRow { display: flex; align-items: center; gap: 10px; margin: 2px 0 12px; }
-  #clock { flex: 1; }
+  #clock { flex: 1; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
   #clockTime {
     font-size: 2.4rem; font-weight: 700; color: var(--text-strong);
-    letter-spacing: 2px; line-height: 1.05;
+    letter-spacing: 2px;
     font-variant-numeric: tabular-nums;   /* 等宽数字，跳分钟时不晃动 */
   }
-  #clockDate { font-size: 0.9rem; color: var(--muted); margin-top: 3px; }
+  #clockDate { font-size: 0.95rem; color: var(--muted); }   /* 时间右边一行小灰字 */
 
   /* 正在做：置顶显示"某某正在做什么"，浅蓝底 */
   #doingBox {
