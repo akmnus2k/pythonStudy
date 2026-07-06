@@ -2,8 +2,22 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>📋 待办清单</title>
+
+<!-- PWA：可"添加到主屏幕"当app用，全屏、离线、有图标 -->
+<meta name="theme-color" content="#A8D4EA">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="待办">
+<script>
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
+  }
+</script>
 <style>
   /* 浅蓝低饱和主题 */
   :root {
@@ -18,11 +32,15 @@
     --p2: #B3A7D6;   /* 第二个人的柔和淡紫：区分"谁完成了什么"，避开红/橙 */
   }
   * { box-sizing: border-box; }
+  html { -webkit-tap-highlight-color: transparent; }   /* 点击不闪灰块，更像原生app */
   body {
-    margin: 0; padding: 16px;
+    margin: 0;
+    padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+             max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
     background: var(--bg); color: var(--text);
     font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
     max-width: 560px; margin-inline: auto;
+    overscroll-behavior-y: contain;   /* 挡住下拉回弹，装到主屏后更稳 */
   }
   h1 { font-size: 1.5rem; color: var(--text-strong); }
   h2 { font-size: 1.05rem; margin: 20px 0 8px; color: var(--text-strong); }
