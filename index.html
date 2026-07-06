@@ -142,6 +142,9 @@
 
   #dayDetail { margin-top: 14px; border-top: 1px solid var(--soft); padding-top: 10px; }
   .review-date { font-weight: 700; color: var(--text-strong); margin-bottom: 8px; }
+  /* 详情分成两块：已完成 / 留言，各自浅色底+小标题，一眼能分清 */
+  .review-sec { background: var(--bg); border-radius: 10px; padding: 8px 11px; margin-top: 10px; }
+  .review-sec-title { font-size: 0.8rem; font-weight: 700; color: var(--muted); margin-bottom: 6px; }
   .review-done { font-size: 0.92rem; margin: 4px 0; }
   .review-msg { color: var(--text); font-size: 0.9rem; margin: 3px 0; }
   .review-msg.other { color: var(--muted); }
@@ -769,7 +772,7 @@ async function fetchOtherBoard() {
   const url = localStorage.getItem("adhd_sync_url" + otherSfx) || "";
   if (!url) { otherMsgsCache = []; otherLogCache = []; otherDoingCache = null; renderBoard(); renderDoing(); renderReview(); return; }
   try {
-    const res = await fetch(url);
+    const res = await fetch(await authed(url));
     const doc = await res.json();
     otherMsgsCache = (doc && doc.messages) ? doc.messages
       : (doc && doc.status && doc.status.text ? [doc.status] : []);
@@ -1092,35 +1095,53 @@ function renderDayDetail(a) {
     return;
   }
 
-  // 已完成：分人一行，✓ 名字用各自颜色标出是谁
-  const doneRow = (label, cls, doneMap) => {
-    const names = Object.keys(doneMap);
-    if (!names.length) return;
-    const line = document.createElement("div");
-    line.className = "review-done";
-    const who = document.createElement("span");
-    who.className = cls;
-    who.textContent = `✓ ${label}：`;
-    line.append(who, document.createTextNode(
-      names.map(n => doneMap[n] > 1 ? `${n}×${doneMap[n]}` : n).join(" · ")));
-    box.append(line);
-  };
-  doneRow(profileLabel(profile), "p-mine", a.mineDone);
-  doneRow(profileLabel(otherP), "p-other", a.theirsDone);
+  // 已完成：单独一块，分人一行，✓ 名字用各自颜色标出是谁
+  if (Object.keys(a.mineDone).length || Object.keys(a.theirsDone).length) {
+    const sec = document.createElement("div");
+    sec.className = "review-sec";
+    const t = document.createElement("div");
+    t.className = "review-sec-title";
+    t.textContent = "✅ 已完成";
+    sec.append(t);
+    const doneRow = (label, cls, doneMap) => {
+      const names = Object.keys(doneMap);
+      if (!names.length) return;
+      const line = document.createElement("div");
+      line.className = "review-done";
+      const who = document.createElement("span");
+      who.className = cls;
+      who.textContent = `✓ ${label}：`;
+      line.append(who, document.createTextNode(
+        names.map(n => doneMap[n] > 1 ? `${n}×${doneMap[n]}` : n).join(" · ")));
+      sec.append(line);
+    };
+    doneRow(profileLabel(profile), "p-mine", a.mineDone);
+    doneRow(profileLabel(otherP), "p-other", a.theirsDone);
+    box.append(sec);
+  }
 
-  // 留言：当天时间线
-  const msgs = a.msgs.slice().sort((x, y) => x.at - y.at);
-  for (const m of msgs) {
-    const line = document.createElement("div");
-    line.className = "review-msg" + (m.mine ? "" : " other");
-    const who = document.createElement("span");
-    who.className = m.mine ? "p-mine" : "p-other";
-    who.textContent = profileLabel(m.mine ? profile : otherP);
-    line.append(
-      document.createTextNode(`${m.mine ? "💬" : "👀"} ${timeHM(m.at)} `),
-      who,
-      document.createTextNode(`：${m.text}`));
-    box.append(line);
+  // 留言：单独一块，当天时间线
+  if (a.msgs.length) {
+    const sec = document.createElement("div");
+    sec.className = "review-sec";
+    const t = document.createElement("div");
+    t.className = "review-sec-title";
+    t.textContent = "💬 留言";
+    sec.append(t);
+    const msgs = a.msgs.slice().sort((x, y) => x.at - y.at);
+    for (const m of msgs) {
+      const line = document.createElement("div");
+      line.className = "review-msg" + (m.mine ? "" : " other");
+      const who = document.createElement("span");
+      who.className = m.mine ? "p-mine" : "p-other";
+      who.textContent = profileLabel(m.mine ? profile : otherP);
+      line.append(
+        document.createTextNode(`${m.mine ? "💬" : "👀"} ${timeHM(m.at)} `),
+        who,
+        document.createTextNode(`：${m.text}`));
+      sec.append(line);
+    }
+    box.append(sec);
   }
 }
 
@@ -1619,10 +1640,62 @@ const syncOK = () => setSyncState(
   `已同步 ${new Date().toTimeString().slice(0, 5)}`);
 const syncFail = () => setSyncState("⚠ 连不上云端（数据仍在本地）");
 
+// ---------- 匿名登录（让数据库能区分"访客"和"扫描机器人"）----------
+// 网页API密钥是公开的、可以安全写在这里；它只对应你的Firebase项目，不是密码。
+// 在哪找：Firebase控制台 → 齿轮⚙ 项目设置 → 常规 → "网页 API 密钥"。
+// 也可留空，改成在浏览器控制台跑：localStorage.setItem("adhd_fb_apikey","你的密钥")
+const FIREBASE_API_KEY = "在这里粘贴你的网页API密钥";
+const fbKey = () => {
+  const k = localStorage.getItem("adhd_fb_apikey") || FIREBASE_API_KEY;
+  return /^AIza/.test(k) ? k : "";   // 没填有效密钥就当没开登录，退回原来的直连方式
+};
+
+let authToken = "", authRefresh = "", authExp = 0;   // 令牌、续期码、过期时刻(ms)
+// 取一个没过期的身份令牌：优先复用 → 其次用续期码换新 → 最后新建匿名身份
+async function getAuthToken() {
+  const key = fbKey();
+  if (!key) return "";                                   // 没配密钥：不带令牌（配合旧的全开规则仍可用）
+  if (authToken && Date.now() < authExp - 60000) return authToken;   // 还没过期(留1分钟余量)
+  authRefresh = authRefresh || localStorage.getItem("adhd_auth_refresh") || "";
+  try {
+    if (authRefresh) {   // 有续期码就续期，避免每次都新建一个匿名账号
+      const r = await fetch("https://securetoken.googleapis.com/v1/token?key=" + key, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: "grant_type=refresh_token&refresh_token=" + encodeURIComponent(authRefresh),
+      });
+      if (r.ok) {
+        const d = await r.json();
+        authToken = d.id_token; authRefresh = d.refresh_token;
+        authExp = Date.now() + (+d.expires_in) * 1000;
+        localStorage.setItem("adhd_auth_refresh", authRefresh);
+        return authToken;
+      }
+      localStorage.removeItem("adhd_auth_refresh"); authRefresh = "";   // 续期码失效了，下面重新登录
+    }
+    const r2 = await fetch("https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=" + key, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ returnSecureToken: true }),
+    });
+    if (!r2.ok) return "";
+    const d2 = await r2.json();
+    authToken = d2.idToken; authRefresh = d2.refreshToken;
+    authExp = Date.now() + (+d2.expiresIn) * 1000;
+    localStorage.setItem("adhd_auth_refresh", authRefresh);
+    return authToken;
+  } catch { return ""; }
+}
+// 给数据库网址拼上令牌参数；拿不到令牌就返回原网址（联不上网时至少不报错）
+async function authed(url) {
+  const t = await getAuthToken();
+  return t ? url + (url.includes("?") ? "&" : "?") + "auth=" + t : url;
+}
+
 async function pushCloud() {
   if (!syncUrl) return;
   try {
-    const res = await fetch(syncUrl, {
+    const res = await fetch(await authed(syncUrl), {
       method: "PUT",
       body: JSON.stringify({
         updated_at: getUpdatedAt(), tasks, title: getTitle(),
@@ -1641,7 +1714,7 @@ async function pullCloud() {
   if (!syncUrl) return;
   const myUrl = syncUrl;   // 记住发请求时的档案，响应回来时若已切换档案就丢弃
   try {
-    const res = await fetch(myUrl);
+    const res = await fetch(await authed(myUrl));
     if (!res.ok) throw 0;
     const doc = await res.json();
     if (syncUrl !== myUrl) return;
