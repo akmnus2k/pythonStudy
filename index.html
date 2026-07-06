@@ -162,12 +162,13 @@
 
   /* 顶部：大时钟（对抗时间盲）+ 缩小版🎲 */
   #topRow { display: flex; align-items: center; gap: 10px; margin: 2px 0 12px; }
-  #clock {
-    flex: 1; font-size: 2.4rem; font-weight: 700; color: var(--text-strong);
-    letter-spacing: 2px; cursor: pointer;
+  #clock { flex: 1; }
+  #clockTime {
+    font-size: 2.4rem; font-weight: 700; color: var(--text-strong);
+    letter-spacing: 2px; line-height: 1.05;
     font-variant-numeric: tabular-nums;   /* 等宽数字，跳分钟时不晃动 */
   }
-  #clock .clock-date { font-size: 1.35rem; letter-spacing: normal; }
+  #clockDate { font-size: 0.9rem; color: var(--muted); margin-top: 3px; }
 
   /* 正在做：置顶显示"某某正在做什么"，浅蓝底 */
   #doingBox {
@@ -177,6 +178,7 @@
   .doing-me { display: flex; align-items: center; gap: 6px; }
   .doing-me > span { flex: 1; cursor: pointer; }
   .doing-me button { background: rgba(255,255,255,0.55); color: var(--text-strong); padding: 2px 9px; }
+  .doing-me .doing-done { background: rgba(255,255,255,0.85); font-weight: 600; }
   .doing-other { opacity: 0.75; margin-top: 4px; }
   .doing-note-input {
     width: 100%; font: inherit; color: var(--text-strong);
@@ -252,7 +254,10 @@
 <h1 id="pageTitle" title="点击修改名称">📋 待办清单</h1>
 
 <div id="topRow">
-  <div id="clock" title="点击看日期">--:--</div>
+  <div id="clock">
+    <div id="clockTime">--:--</div>
+    <div id="clockDate"></div>
+  </div>
   <button id="reviewBtn" class="primary">📅 回顾</button>
 </div>
 <div id="doingBox" style="display:none"></div>
@@ -669,36 +674,16 @@ function flash(msg) {
   flashTimer = setTimeout(() => el.style.display = "none", 2500);
 }
 
-// ---------- 时钟：对抗时间盲，默认时间，点一下看日期（几秒后自动跳回） ----------
-let clockShowDate = false;
-let clockRevert;
-
+// ---------- 时钟：对抗时间盲，时间(大)+日期(小)都常显 ----------
 function renderClock() {
-  const el = document.getElementById("clock");
   const now = new Date();
-  if (clockShowDate) {
-    const week = "日一二三四五六"[now.getDay()];
-    el.innerHTML = `<span class="clock-date"></span>`;
-    el.querySelector(".clock-date").textContent =
-      `${now.getMonth() + 1}月${now.getDate()}日 周${week}`;
-  } else {
-    const p = n => String(n).padStart(2, "0");
-    el.textContent = `${p(now.getHours())}:${p(now.getMinutes())}`;
-  }
+  const p = n => String(n).padStart(2, "0");
+  const week = "日一二三四五六"[now.getDay()];
+  document.getElementById("clockTime").textContent = `${p(now.getHours())}:${p(now.getMinutes())}`;
+  document.getElementById("clockDate").textContent = `${now.getMonth() + 1}月${now.getDate()}日 周${week}`;
 }
 
 setInterval(renderClock, 1000);
-
-document.getElementById("clock").onclick = () => {
-  clockShowDate = !clockShowDate;
-  renderClock();
-  clearTimeout(clockRevert);
-  if (clockShowDate) {
-    // 6秒后自动回到时间，保证"默认显示时间"永远成立
-    clockRevert = setTimeout(() => { clockShowDate = false; renderClock(); }, 6000);
-  }
-};
-
 renderClock();
 
 // ---------- 留言板：两人的"正在干嘛"和留言，合并成一条时间线 ----------
@@ -926,11 +911,20 @@ function renderDoing() {
     span.textContent =
       `🎯 ${profileLabel(profile)} 正在做：${mine.name}${mine.note ? " · " + mine.note : ""}（${ago(mine.at)}）`;
     span.onclick = editDoingNote;
+    // ✓ 完成 = 直接给这个任务打卡（和点任务卡上的✓一样；完成后会自动结束"正在做"）
+    const done = document.createElement("button");
+    done.className = "doing-done";
+    done.textContent = "✓ 完成";
+    done.title = "完成打卡";
+    done.onclick = () => {
+      const task = tasks.find(t => t.name === mine.name);
+      task ? checkIn(task) : clearDoing();   // 找不到对应任务就只结束"正在做"
+    };
     const x = document.createElement("button");
     x.textContent = "✕";
-    x.title = "结束";
+    x.title = "只是不做了（不打卡）";
     x.onclick = clearDoing;
-    row.append(span, x);
+    row.append(span, done, x);
     box.append(row);
   }
   if (other) {
