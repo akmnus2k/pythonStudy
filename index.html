@@ -187,15 +187,8 @@
   .doing-btn { background: var(--soft); color: var(--text-strong); padding: 8px 12px; font-size: 1rem; }
   .check-btn { background: var(--soft); color: var(--text-strong); padding: 8px 13px; font-size: 1rem; font-weight: 700; }
 
-  /* 拖拽把手：按住↕上下拖动排序 */
-  .drag-handle {
-    flex: 0 0 auto; align-self: stretch; display: flex; align-items: center;
-    padding: 0 6px; margin: -8px 4px -8px -6px;   /* 抵消卡片内边距，加大触摸热区 */
-    color: var(--muted); cursor: grab; user-select: none;
-    touch-action: none;   /* 关键：按住把手拖动时不让页面滚动 */
-  }
-  .drag-handle:active { cursor: grabbing; }
-  .drag-handle .grip { display: block; }
+  /* 拖拽排序：长按任务框进入拖动。禁掉长按选中/系统菜单，体验才顺 */
+  .card { -webkit-touch-callout: none; user-select: none; }
   /* 拖动中：被拖卡片跟手浮起，其余卡片平滑让位 */
   .drag-shift { transition: transform 0.18s ease; will-change: transform; }
   .card.drag-float {
@@ -512,16 +505,54 @@ function visibleTasks() {
   ];
 }
 
-// ---------- 拖拽排序：按住↕把手上下拖，同区内平滑重排 ----------
+// ---------- 拖拽排序：长按任务框上下拖，同区内平滑重排 ----------
 // 手机上 HTML5 draggable 失效，用 pointer 事件。为了丝滑：拖动全程不重建列表，
 // 被拖的卡片用 transform 跟手浮起，其余卡片用 transform+过渡平滑让位，松手才落盘。
-// 指针捕获放在稳定的 body 上，事件冒泡到 document。
-let drag = null;   // 当前拖动会话；null 表示没在拖
+// 交互：按住任务框约0.4秒进入拖动；期间手指划走=当滚动/点击，不进拖动。
+let drag = null;         // 当前拖动会话；null 表示没在拖
+let lastDragEnd = 0;     // 上次拖动结束时刻，用来吞掉拖完误触的点击
+let holdTimer = null, holdStart = null;
 
-function beginDrag(e, t, card) {
+function cardHold(e, t, card) {
   if (e.button !== undefined && e.button > 0) return;   // 只响应左键/触摸
-  e.preventDefault();
-  e.stopPropagation();                                  // 不触发卡片的"打开编辑"
+  holdStart = { t, card, y: e.clientY, x: e.clientX, id: e.pointerId };
+  holdTimer = setTimeout(holdFired, 400);
+  document.addEventListener("pointermove", holdMove);
+  document.addEventListener("pointerup", holdCancel);
+  document.addEventListener("pointercancel", holdCancel);
+  document.addEventListener("touchmove", holdTouchMove, { passive: false });
+}
+
+function holdMove(e) {
+  if (!holdStart) return;   // 长按前手指挪了 → 是滚动/滑动，不进拖动
+  if (Math.abs(e.clientY - holdStart.y) > 10 || Math.abs(e.clientX - holdStart.x) > 10) holdCancel();
+}
+
+// 拖动中才拦住页面滚动（长按前不拦，手指划走就正常滚页面）
+function holdTouchMove(e) { if (drag && drag.active) e.preventDefault(); }
+
+function holdCancel() {
+  clearTimeout(holdTimer); holdTimer = null;
+  document.removeEventListener("pointermove", holdMove);
+  document.removeEventListener("pointerup", holdCancel);
+  document.removeEventListener("pointercancel", holdCancel);
+  document.removeEventListener("touchmove", holdTouchMove);
+  holdStart = null;
+}
+
+function holdFired() {
+  const s = holdStart;
+  holdTimer = null;
+  // 长按判定用的监听撤掉（touchmove 保留到拖动结束，用来拦滚动）
+  document.removeEventListener("pointermove", holdMove);
+  document.removeEventListener("pointerup", holdCancel);
+  document.removeEventListener("pointercancel", holdCancel);
+  holdStart = null;
+  if (navigator.vibrate) { try { navigator.vibrate(20); } catch (_) {} }   // 轻震一下：可以拖了
+  beginDrag(s.y, s.id, s.t, s.card);
+}
+
+function beginDrag(startY, pointerId, t, card) {
   const group = groupOf(t);
   const els = [...document.querySelectorAll("#main .card")]
     .filter(c => c._task && groupOf(c._task) === group);   // 同区卡片，DOM顺序
@@ -533,11 +564,13 @@ function beginDrag(e, t, card) {
   drag = {
     task: t, card, items,
     dragIndex: els.indexOf(card), newIndex: els.indexOf(card),
-    startY: e.clientY, origCenter: rect.top + rect.height / 2,
+    startY, origCenter: rect.top + rect.height / 2,
     outerH: rect.height + 8,   // 卡片高度+间距=让位时其余卡片挪动的量
-    active: false, pointerId: e.pointerId,
+    active: true, pointerId,   // 长按已确认拖动，直接浮起
   };
-  try { document.body.setPointerCapture(e.pointerId); } catch (_) {}
+  try { document.body.setPointerCapture(pointerId); } catch (_) {}
+  card.classList.add("drag-float");
+  for (const it of items) if (it.el !== card) it.el.classList.add("drag-shift");
   document.addEventListener("pointermove", onDragMove);
   document.addEventListener("pointerup", endDrag);
   document.addEventListener("pointercancel", endDrag);
@@ -546,12 +579,6 @@ function beginDrag(e, t, card) {
 function onDragMove(e) {
   if (!drag) return;
   const dy = e.clientY - drag.startY;
-  if (!drag.active) {
-    if (Math.abs(dy) < 6) return;                       // 小于6px当误触，不算拖拽
-    drag.active = true;
-    drag.card.classList.add("drag-float");
-    for (const it of drag.items) if (it.el !== drag.card) it.el.classList.add("drag-shift");
-  }
   drag.card.style.transform = `translateY(${dy}px)`;    // 被拖卡片跟手
   const center = drag.origCenter + dy;
 
@@ -574,10 +601,12 @@ function endDrag() {
   document.removeEventListener("pointermove", onDragMove);
   document.removeEventListener("pointerup", endDrag);
   document.removeEventListener("pointercancel", endDrag);
+  document.removeEventListener("touchmove", holdTouchMove);
   if (!drag) return;
   try { if (drag.pointerId != null) document.body.releasePointerCapture(drag.pointerId); } catch (_) {}
   const d = drag;
   drag = null;
+  lastDragEnd = Date.now();   // 让紧随其后的误触点击被忽略
   d.card.classList.remove("drag-float");
   d.card.style.transform = "";
   for (const it of d.items) { it.el.classList.remove("drag-shift"); it.el.style.transform = ""; }
@@ -1167,14 +1196,6 @@ function taskCard(t) {
   const row = document.createElement("div");
   row.className = "row";
 
-  const handle = document.createElement("div");
-  handle.className = "drag-handle";
-  handle.title = "按住上下拖动排序";
-  handle.innerHTML = '<svg class="grip" viewBox="0 0 24 24" width="16" height="16" fill="none" ' +
-    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
-    '<polyline points="8 9 12 5 16 9"></polyline><polyline points="8 15 12 19 16 15"></polyline></svg>';
-  handle.addEventListener("pointerdown", e => beginDrag(e, t, card));
-
   const info = document.createElement("div");
   info.className = "info";
   const mark = (t.category === "近期" && t.priority === 1) ? "🎯 " : "";
@@ -1212,9 +1233,11 @@ function taskCard(t) {
     info.append(nextDiv);
   }
 
-  // 点任务本身 = 展开/收起内层编辑面板
-  info.title = "点击编辑";
+  // 点任务本身 = 展开/收起内层编辑面板；长按任务框 = 拖动排序
+  info.title = "点击编辑，长按拖动排序";
+  info.addEventListener("pointerdown", e => cardHold(e, t, card));
   info.onclick = () => {
+    if (Date.now() - lastDragEnd < 350) return;   // 刚拖完的误触点击忽略
     expandedSubs.has(t) ? expandedSubs.delete(t) : expandedSubs.add(t);
     render();
   };
@@ -1231,7 +1254,7 @@ function taskCard(t) {
   btn.title = "打卡完成";
   btn.onclick = () => checkIn(t);
 
-  row.append(handle, info, doingBtn, btn);
+  row.append(info, doingBtn, btn);
   card.append(row);
   if (expandedSubs.has(t)) card.append(editPanel(t));
   return card;
