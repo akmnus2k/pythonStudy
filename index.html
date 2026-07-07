@@ -638,13 +638,16 @@ function endDrag() {
   for (const it of d.items) { it.el.classList.remove("drag-shift"); it.el.style.transform = ""; }
   if (!d.active || d.newIndex === d.dragIndex) return;   // 没真的移动就到此为止
 
-  // 落盘：本组任务按新顺序写回它们在 tasks[] 里占的那些位置，其它任务原地不动
-  const groupTasks = d.items.map(it => it.task);
-  const newOrder = groupTasks.slice();
-  newOrder.splice(newOrder.indexOf(d.task), 1);
-  newOrder.splice(d.newIndex, 0, d.task);
+  // 落盘：未完成的按新顺序排在前，已完成的挪到本区末尾（保持各自相对顺序）。
+  // 这样即便有任务已完成、槽位被"冻住"，第二天重置后待办顺序仍是你排好的顺序。
+  const g = groupOf(d.task);
+  const sameGroup = tasks.filter(t => groupOf(t) === g);   // 本区全部任务（含已完成）
+  const pendingNew = d.items.map(it => it.task);           // 可见（未完成）的，下面重排
+  pendingNew.splice(pendingNew.indexOf(d.task), 1);
+  pendingNew.splice(d.newIndex, 0, d.task);
+  const seq = pendingNew.concat(sameGroup.filter(t => t.done));
   let k = 0;
-  for (let i = 0; i < tasks.length; i++) if (groupTasks.includes(tasks[i])) tasks[i] = newOrder[k++];
+  for (let i = 0; i < tasks.length; i++) if (sameGroup.includes(tasks[i])) tasks[i] = seq[k++];
   save();
   render();
 }
@@ -666,6 +669,7 @@ function checkIn(t) {
     flash(`👍 ${t.name} +1（${t.times - t.left}/${t.times}）`);
   } else {
     t.done = true;
+    t.done_at = Date.now();   // 精确完成时刻，用于"已完成"按时间排序
     if (t.category === "日常" && !t.track) {
       // streak按周期数：上个周期（昨天/上周/上月）也做满了就+1，否则从1重新数
       const curKey = periodKey(todayStr(), t.period);
@@ -1466,9 +1470,11 @@ function render() {
   const recent = vis.filter(t => t.category === "近期");
   const daily = vis.filter(t => t.category === "日常");
   const interest = vis.filter(t => t.category === "兴趣");
-  const dailyDone = tasks.filter(t => t.done && t.category === "日常");
-  const recentDone = tasks.filter(t => t.done && t.category === "近期");
-  const interestDone = tasks.filter(t => t.done && t.category === "兴趣");
+  // 已完成的按完成时间排序：最近完成的在最上面（旧数据没有done_at的排在最后）
+  const byDoneTime = (a, b) => (b.done_at || 0) - (a.done_at || 0);
+  const dailyDone = tasks.filter(t => t.done && t.category === "日常").sort(byDoneTime);
+  const recentDone = tasks.filter(t => t.done && t.category === "近期").sort(byDoneTime);
+  const interestDone = tasks.filter(t => t.done && t.category === "兴趣").sort(byDoneTime);
 
   renderReview();   // 回顾开着时，完成/还原后同步刷新
 
