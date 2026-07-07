@@ -1521,7 +1521,7 @@ function render() {
       week.forEach(t => main.append(taskCard(t)));
       recentTrackToday.forEach(t => main.append(doneLine(t)));   // 点它才重新开始
       if (recentTrackEarlier.length) {
-        const det = fold(`🗓 前几天完成的（${recentTrackEarlier.length}）`, "fold", "recentTrackEarlierOpen");
+        const det = fold("已完成", "fold", "recentTrackEarlierOpen");
         recentTrackEarlier.forEach(t => det.append(doneLine(t)));
         main.append(det);
       }
@@ -1549,7 +1549,7 @@ function render() {
              .forEach(t => main.append(doneLine(t)));
     const dailyTrackEarlier = dailyDone.filter(t => t.track && t.last_done !== todayStr());
     if (dailyTrackEarlier.length) {
-      const det = fold(`🗓 前几天完成的（${dailyTrackEarlier.length}）`, "fold", "dailyTrackEarlierOpen");
+      const det = fold("已完成", "fold", "dailyTrackEarlierOpen");
       dailyTrackEarlier.forEach(t => det.append(doneLine(t)));
       main.append(det);
     }
