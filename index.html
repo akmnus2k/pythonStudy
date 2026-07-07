@@ -1451,7 +1451,7 @@ function doneLine(t) {
 }
 
 // 折叠组的开合状态（只在本次打开期间记住，刷新后回到默认收起）
-const ui = { recentDoneOpen: false, interestOpen: false, dormantOpen: false, boardOpen: false, upcomingOpen: false, msgHistoryOpen: false };
+const ui = { recentDoneOpen: false, interestOpen: false, dormantOpen: false, boardOpen: false, upcomingOpen: false, msgHistoryOpen: false, recentTrackEarlierOpen: false, dailyTrackEarlierOpen: false };
 
 function fold(title, cls, openKey) {
   const det = document.createElement("details");
@@ -1509,7 +1509,9 @@ function render() {
   // 分区顺序：近一周 → Upcoming（折叠）→ 日常 → 兴趣（折叠）
   const week = recent.filter(t => !isUpcoming(t));
   const upcoming = recent.filter(isUpcoming);
-  const recentTrackDone = recentDone.filter(t => t.track);    // 完成后保留的，标"N天前"直接显示
+  const recentTrackDone = recentDone.filter(t => t.track);    // 完成后保留的，标"N天前"
+  const recentTrackToday = recentTrackDone.filter(t => t.last_done === todayStr());   // 今天完成的直接显示
+  const recentTrackEarlier = recentTrackDone.filter(t => t.last_done !== todayStr()); // 前几天完成的折叠起来
   const recentOtherDone = recentDone.filter(t => !t.track);   // 普通完成的，收进"已完成"折叠
   if (week.length || upcoming.length || recentDone.length) {
     if (week.length || recentTrackDone.length) {
@@ -1517,7 +1519,12 @@ function render() {
       h.textContent = "📌 近一周";
       main.append(h);
       week.forEach(t => main.append(taskCard(t)));
-      recentTrackDone.forEach(t => main.append(doneLine(t)));   // 点它才重新开始
+      recentTrackToday.forEach(t => main.append(doneLine(t)));   // 点它才重新开始
+      if (recentTrackEarlier.length) {
+        const det = fold(`🗓 前几天完成的（${recentTrackEarlier.length}）`, "fold", "recentTrackEarlierOpen");
+        recentTrackEarlier.forEach(t => det.append(doneLine(t)));
+        main.append(det);
+      }
     }
     if (upcoming.length) {
       // 一周以外的事先收起来；日子临近7天时会自动浮上来到"近一周"
@@ -1537,8 +1544,15 @@ function render() {
     // 今天完成的（会重置的）直接亮出来（成就感+可反悔）
     dailyDone.filter(t => !t.track && t.last_done === todayStr())
              .forEach(t => main.append(doneLine(t)));
-    // "完成后保留"的任务：始终留在这里，标"N天前"，点它才重新开始
-    dailyDone.filter(t => t.track).forEach(t => main.append(doneLine(t)));
+    // "完成后保留"的任务：今天完成的直接亮着，前几天完成的折叠起来（点它才重新开始）
+    dailyDone.filter(t => t.track && t.last_done === todayStr())
+             .forEach(t => main.append(doneLine(t)));
+    const dailyTrackEarlier = dailyDone.filter(t => t.track && t.last_done !== todayStr());
+    if (dailyTrackEarlier.length) {
+      const det = fold(`🗓 前几天完成的（${dailyTrackEarlier.length}）`, "fold", "dailyTrackEarlierOpen");
+      dailyTrackEarlier.forEach(t => det.append(doneLine(t)));
+      main.append(det);
+    }
     // 周期内早前完成的低频任务（周一洗的床单）休眠折叠，下个周期自动回到待办
     const dormant = dailyDone.filter(t => !t.track && t.last_done !== todayStr());
     if (dormant.length) {
