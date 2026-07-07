@@ -89,6 +89,12 @@
   .done-line { color: var(--muted); padding: 4px 2px; cursor: pointer; }
   .done-line s { margin-right: 6px; }
   .due { font-size: 0.8rem; color: var(--muted); margin-left: 6px; }
+  /* 已完成任务：常显方框（替代折叠），和上面待办分开 */
+  .done-box {
+    border: 1px solid var(--soft); border-radius: 12px; background: var(--bg);
+    padding: 6px 12px; margin: 6px 0 12px;
+  }
+  .done-box-title { color: var(--muted); font-size: 0.82rem; margin: 2px 0 4px; }
 
   /* 列表内的折叠组（已完成/兴趣区），比设置类details轻量 */
   details.fold { margin: 4px 0 10px; padding: 8px 12px; }
@@ -1446,8 +1452,23 @@ function doneLine(t) {
   line.innerHTML = `✅ <s></s>${fire}${ago}`;
   line.querySelector("s").textContent = t.name;
   line.title = t.track ? "点击重新开始" : "点击还原";
-  line.onclick = () => restoreTask(t);
+  line.onclick = () => {
+    const msg = t.track ? `「${t.name}」重新开始（重新计时）？` : `把「${t.name}」恢复成"未完成"？`;
+    if (confirm(msg)) restoreTask(t);
+  };
   return line;
+}
+
+// 已完成的任务：用一个常显的方框框起来（不折叠），和上面的待办分开
+function doneBox(title, list) {
+  const box = document.createElement("div");
+  box.className = "done-box";
+  const h = document.createElement("div");
+  h.className = "done-box-title";
+  h.textContent = title;
+  box.append(h);
+  list.forEach(t => box.append(doneLine(t)));
+  return box;
 }
 
 // 折叠组的开合状态（只在本次打开期间记住，刷新后回到默认收起）
@@ -1520,11 +1541,7 @@ function render() {
       main.append(h);
       week.forEach(t => main.append(taskCard(t)));
       recentTrackToday.forEach(t => main.append(doneLine(t)));   // 点它才重新开始
-      if (recentTrackEarlier.length) {
-        const det = fold("近日完成", "fold", "recentTrackEarlierOpen");
-        recentTrackEarlier.forEach(t => det.append(doneLine(t)));
-        main.append(det);
-      }
+      if (recentTrackEarlier.length) main.append(doneBox("近日完成", recentTrackEarlier));
     }
     if (upcoming.length) {
       // 一周以外的事先收起来；日子临近7天时会自动浮上来到"近一周"
@@ -1532,11 +1549,7 @@ function render() {
       upcoming.forEach(t => det.append(taskCard(t)));
       main.append(det);
     }
-    if (recentOtherDone.length) {
-      const det = fold(`✅ 已完成（${recentOtherDone.length}）`, "fold", "recentDoneOpen");
-      recentOtherDone.forEach(t => det.append(doneLine(t)));
-      main.append(det);
-    }
+    if (recentOtherDone.length) main.append(doneBox(`✅ 已完成（${recentOtherDone.length}）`, recentOtherDone));
   }
 
   if (daily.length || dailyDone.length) {
@@ -1548,18 +1561,10 @@ function render() {
     dailyDone.filter(t => t.track && t.last_done === todayStr())
              .forEach(t => main.append(doneLine(t)));
     const dailyTrackEarlier = dailyDone.filter(t => t.track && t.last_done !== todayStr());
-    if (dailyTrackEarlier.length) {
-      const det = fold("近日完成", "fold", "dailyTrackEarlierOpen");
-      dailyTrackEarlier.forEach(t => det.append(doneLine(t)));
-      main.append(det);
-    }
-    // 周期内早前完成的低频任务（周一洗的床单）休眠折叠，下个周期自动回到待办
+    if (dailyTrackEarlier.length) main.append(doneBox("近日完成", dailyTrackEarlier));
+    // 周期内早前完成的低频任务（周一洗的床单），下个周期自动回到待办
     const dormant = dailyDone.filter(t => !t.track && t.last_done !== todayStr());
-    if (dormant.length) {
-      const det = fold(`💤 本周期已完成（${dormant.length}）`, "fold", "dormantOpen");
-      dormant.forEach(t => det.append(doneLine(t)));
-      main.append(det);
-    }
+    if (dormant.length) main.append(doneBox(`💤 本周期已完成（${dormant.length}）`, dormant));
   }
 
   // 兴趣区默认折叠：闲暇时才需要打开看；完成的也保留在里面，点击可还原
