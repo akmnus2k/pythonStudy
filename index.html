@@ -764,7 +764,8 @@ function setRead(at, isRead) {
   isRead ? s.add(at) : s.delete(at);
   const cut = Date.now() - 60 * 864e5;                       // 顺手清掉60天前的旧记录，避免无限增长
   localStorage.setItem(READ_KEY, JSON.stringify([...s].filter(x => x >= cut)));
-  renderBoard();                                             // 只更新本地视图，不推云端
+  renderBoard();
+  if (syncUrl) pushCloud();                                  // 已读也同步：立刻推给别的设备
 }
 
 // TA的留言：读"另一个档案"的同步码（如果这台设备配置过），直接拉云端文档
@@ -1709,6 +1710,7 @@ async function pushCloud() {
         status: getMsgs()[0] || null,   // 兼容：对方还没刷新到新版时也能看到最新一条
         doing: getDoing(),
         log: getLog(),
+        read: [...getReadSet()],        // 已读列表（时间戳），拉取时只增不减地合并
       }),
     });
     if (!res.ok) throw 0;
@@ -1756,6 +1758,22 @@ async function pullCloud() {
       const cloudAts = new Set(incoming.map(m => m && m.at));
       // 云端缺了本地有的留言 → 说明云端被写旧/写空了，立刻用本地补回云端
       if (!pushed && getMsgs().some(m => !cloudAts.has(m.at))) pushCloud();
+    }
+
+    // 已读：也只增不减地合并——某台设备标了已读，别的设备也跟着变已读
+    // （标"未读"不保证跨设备，因为只增不减：见 setRead 说明）
+    if (doc && Array.isArray(doc.read)) {
+      const local = getReadSet();
+      const before = local.size;
+      for (const at of doc.read) local.add(at);
+      if (local.size !== before) {
+        const cut = Date.now() - 60 * 864e5;                        // 和 setRead 一样清60天前的
+        localStorage.setItem(READ_KEY, JSON.stringify([...local].filter(x => x >= cut)));
+        renderBoard();
+      }
+      const cloudRead = new Set(doc.read);
+      // 云端缺了本地有的已读 → 补回云端
+      if (!pushed && [...getReadSet()].some(at => !cloudRead.has(at))) pushCloud();
     }
     syncOK();
   } catch { syncFail(); }
