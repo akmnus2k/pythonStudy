@@ -87,6 +87,8 @@
   .count { font-size: 0.8rem; color: var(--muted); margin-top: 4px; }
 
   .done-line { color: var(--muted); padding: 4px 2px; cursor: pointer; }
+  /* 直接摆在列表里的完成行（今天完成的），左边距对齐done-box框内的行（12px框内边距+1px边框） */
+  #main > .done-line { padding-left: 15px; }
   .done-line s { margin-right: 6px; }
   .due { font-size: 0.8rem; color: var(--muted); margin-left: 6px; }
   /* 已完成任务：常显方框（替代折叠），和上面待办分开 */
@@ -1447,9 +1449,12 @@ function doneLine(t) {
   line.className = "done-line";
   line.title = "点击还原";
   const fire = (t.category === "日常" && !t.track && t.streak >= 2) ? ` 🌱×${t.streak}` : "";
-  // "完成后保留"的任务，名字后面标"N天前"
-  const ago = (t.track && t.last_done) ? ` <span class="due">${agoText(t.last_done)}</span>` : "";
-  line.innerHTML = `✅ <s></s>${fire}${ago}`;
+  // 完成时间标签：今天完成的标"N分钟前/N小时前"（用精确时刻done_at），更早的标"N天前"
+  let when = "";
+  if (t.last_done === todayStr() && t.done_at) when = ago(t.done_at);
+  else if (t.track && t.last_done) when = agoText(t.last_done);
+  const whenTag = when ? ` <span class="due">${when}</span>` : "";
+  line.innerHTML = `✅ <s></s>${fire}${whenTag}`;
   line.querySelector("s").textContent = t.name;
   line.title = t.track ? "点击重新开始" : "点击还原";
   line.onclick = () => {
