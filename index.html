@@ -390,7 +390,7 @@ window.addEventListener("error", e => {
   el.style.display = "block";
 });
 
-let KEY, META_KEY, SYNC_KEY, TITLE_KEY, STATUS_KEY, MSG_KEY, DOING_KEY, LOG_KEY, READ_KEY, VAULT_KEY, TASK_VAULT_KEY;   // 具体值按当前档案在applyProfile()里赋
+let KEY, META_KEY, SYNC_KEY, TITLE_KEY, STATUS_KEY, MSG_KEY, DOING_KEY, LOG_KEY, READ_KEY, VAULT_KEY, TASK_VAULT_KEY, TOMB_KEY, REVOKE_KEY;   // 具体值按当前档案在applyProfile()里赋
 
 // ---------- 日期（用本地时间，不能用toISOString——那是UTC，晚上8点后会差一天） ----------
 const dateStr = d => {
@@ -447,6 +447,8 @@ function applyProfile() {
   READ_KEY = "adhd_read_msgs" + sfx;         // 已读留言的时间戳集合（仅本机，不走云同步）
   VAULT_KEY = "adhd_msgs_vault" + sfx;       // 留言保险库：只增不改的本地备份，云同步碰不到
   TASK_VAULT_KEY = "adhd_tasks_vault" + sfx; // 任务保险库：每个任务(按类别+名字)存最新一份，恢复兜底
+  TOMB_KEY = "adhd_tombs" + sfx;             // 放弃任务的墓碑：同步合并时区分"那边删了"和"这边新加的"
+  REVOKE_KEY = "adhd_log_revoked" + sfx;     // 撤销的打卡流水名单：防止撤掉的打卡被合并救回来
   syncUrl = localStorage.getItem(SYNC_KEY) || "";
 }
 
@@ -493,6 +495,71 @@ function vaultTasks() {
         .forEach(k => delete vault[k]);
   }
   localStorage.setItem(TASK_VAULT_KEY, JSON.stringify(vault));
+}
+
+// ---------- 任务合并（云同步防覆盖的核心） ----------
+// 旧版同步是"整份替换，时间戳新的赢"：一台设备拿着旧数据做了新改动，
+// 就会把另一台的打卡整份冲掉。现在改成按任务合并：谁的最后动作晚听谁的。
+const taskKey = t => (t.category || "") + "|" + t.name;
+
+// 一个任务最后一次被"动过"的时刻：打卡(done_at)和撤销(undone_at)都算动作；
+// 老数据没有精确时刻，用完成日期的当天0点兜底
+function actAt(t) {
+  let a = Math.max(t.done_at || 0, t.undone_at || 0);
+  if (t.last_done) a = Math.max(a, parseDate(t.last_done).getTime());
+  return a;
+}
+
+// 把 o 的完成状态抄给 t（只抄打卡相关字段，名字/优先级/备注等编辑字段不动）
+function copyDoneState(t, o) {
+  t.done = o.done; t.left = o.left; t.last_done = o.last_done;
+  if (o.done_at !== undefined) t.done_at = o.done_at;
+  if (o.undone_at !== undefined) t.undone_at = o.undone_at;
+  t.streak = o.streak; t.last_full = o.last_full;
+}
+
+// 放弃任务的墓碑 {key: 放弃时刻}：只留60天
+const getTombs = () => { try { return JSON.parse(localStorage.getItem(TOMB_KEY) || "{}"); } catch (_) { return {}; } };
+function addTomb(t) {
+  const tombs = getTombs();
+  tombs[taskKey(t)] = Date.now();
+  const cut = Date.now() - 60 * 864e5;
+  for (const k in tombs) if (tombs[k] < cut) delete tombs[k];
+  localStorage.setItem(TOMB_KEY, JSON.stringify(tombs));
+}
+function mergeTombs(incoming) {
+  if (!incoming || typeof incoming !== "object") return;
+  const tombs = getTombs();
+  let changed = false;
+  for (const k in incoming) {
+    if ((tombs[k] || 0) < incoming[k]) { tombs[k] = incoming[k]; changed = true; }
+  }
+  if (changed) localStorage.setItem(TOMB_KEY, JSON.stringify(tombs));
+}
+
+// 以 base 为底，从 extra 里抢救：①更新的完成状态 ②base缺的任务（没被放弃的才复活）。
+// 最后按墓碑清一遍"放弃后又被旧数据带回来"的任务。直接改 base，返回是否有改动。
+function mergeTasks(base, extra) {
+  let changed = false;
+  const byKey = {};
+  for (const t of base) byKey[taskKey(t)] = t;
+  const tombs = getTombs();
+  for (const o of extra || []) {
+    if (!o || !o.name) continue;
+    const k = taskKey(o), mine = byKey[k];
+    if (!mine) {
+      // base里没有：要么这边新加的(保留)，要么对面放弃的(墓碑比它新就不复活)
+      if ((tombs[k] || 0) > Math.max(o.created_at || 0, actAt(o))) continue;
+      base.push(o); byKey[k] = o; changed = true;
+    } else if (actAt(o) > actAt(mine)) {
+      copyDoneState(mine, o); changed = true;
+    }
+  }
+  for (let i = base.length - 1; i >= 0; i--) {
+    const t = base[i], ts = tombs[taskKey(t)] || 0;
+    if (ts && ts > Math.max(t.created_at || 0, actAt(t))) { base.splice(i, 1); changed = true; }
+  }
+  return changed;
 }
 
 function fixOldTasks(list) {
@@ -667,6 +734,49 @@ function logDone(name) {
   const a = getLog().filter(e => e.at >= cut);
   a.push({ name, at: Date.now() });
   localStorage.setItem(LOG_KEY, JSON.stringify(a));
+}
+
+// 流水同步改成"只增不减"合并（同留言板）：任何一次坏同步都冲不掉回顾记录。
+// 撤销的打卡记进名单(REVOKE_KEY)并跟着同步，防止撤掉的又被合并救回来。
+const logId = e => e.name + "@" + e.at;
+const getRevoked = () => { try { return JSON.parse(localStorage.getItem(REVOKE_KEY) || "[]"); } catch (_) { return []; } };
+function revokeLogEntry(e) {
+  const cut = Date.now() - 60 * 864e5;
+  const rv = getRevoked().filter(x => x.at >= cut);
+  rv.push({ name: e.name, at: e.at });
+  localStorage.setItem(REVOKE_KEY, JSON.stringify(rv));
+}
+function mergeRevokes(incoming) {
+  if (!Array.isArray(incoming) || !incoming.length) return false;
+  const local = getRevoked();
+  const seen = new Set(local.map(logId));
+  const added = incoming.filter(e => e && e.name && e.at && !seen.has(logId(e)));
+  if (!added.length) return false;
+  localStorage.setItem(REVOKE_KEY, JSON.stringify(local.concat(added)));
+  return true;
+}
+function mergeIncomingLog(incoming) {
+  if (!Array.isArray(incoming) || !incoming.length) return false;
+  const cut = Date.now() - 60 * 864e5;
+  const local = getLog();
+  const seen = new Set(local.map(logId));
+  const revoked = new Set(getRevoked().map(logId));
+  const added = incoming.filter(e =>
+    e && e.name && e.at >= cut && !seen.has(logId(e)) && !revoked.has(logId(e)));
+  if (!added.length) return false;
+  const merged = local.concat(added).sort((a, b) => a.at - b.at);
+  localStorage.setItem(LOG_KEY, JSON.stringify(merged));
+  return true;
+}
+// 撤销名单可能从别的设备同步过来：把本地流水里对应的条目也清掉
+function applyRevokes() {
+  const revoked = new Set(getRevoked().map(logId));
+  if (!revoked.size) return false;
+  const log = getLog();
+  const kept = log.filter(e => !revoked.has(logId(e)));
+  if (kept.length === log.length) return false;
+  localStorage.setItem(LOG_KEY, JSON.stringify(kept));
+  return true;
 }
 
 function checkIn(t) {
@@ -1406,6 +1516,7 @@ function editPanel(t) {
   drop.title = "放弃这个任务";
   drop.onclick = () => {
     if (confirm(`确定放弃「${t.name}」？`)) {
+      addTomb(t);   // 立墓碑：别的设备的旧数据同步过来时，这任务不会复活
       tasks.splice(tasks.indexOf(t), 1);
       save(); render();
       flash(`🗑 已放弃：${t.name}。放弃也是决策，给大脑腾地方 👍`);
@@ -1427,11 +1538,15 @@ function section(main, title, list) {
 function restoreTask(t) {
   // 点已完成的任务 = 撤销最后一次打卡
   t.done = false;
+  t.undone_at = Date.now();   // 撤销也是"动作"：同步合并时防旧的"已完成"盖回来
   if (t.left <= 0) t.left = 1;
-  // 把今天这条完成流水也撤掉，回顾才对得上
+  // 把今天这条完成流水也撤掉，回顾才对得上；记入撤销名单防同步合并救回来
   const log = getLog();
   for (let i = log.length - 1; i >= 0; i--) {
-    if (log[i].name === t.name && dateStr(new Date(log[i].at)) === todayStr()) { log.splice(i, 1); break; }
+    if (log[i].name === t.name && dateStr(new Date(log[i].at)) === todayStr()) {
+      revokeLogEntry(log[i]);
+      log.splice(i, 1); break;
+    }
   }
   localStorage.setItem(LOG_KEY, JSON.stringify(log));
   const curKey = t.category === "日常" ? periodKey(todayStr(), t.period) : "";
@@ -1617,6 +1732,7 @@ document.getElementById("addForm").addEventListener("submit", e => {
     times, left: times, period, track, done: false,
     last_done: "", streak: 0, last_full: "",
     subs: [], due,
+    created_at: Date.now(),   // 同步合并时区分"新加的"和"被放弃的"
   });
   document.getElementById("fDue").value = "";
   document.getElementById("fTrack").checked = false;
@@ -1734,6 +1850,8 @@ async function pushCloud() {
         status: getMsgs()[0] || null,   // 兼容：对方还没刷新到新版时也能看到最新一条
         doing: getDoing(),
         log: getLog(),
+        logRevoked: getRevoked(),       // 撤销的打卡名单，随流水一起走
+        tombs: getTombs(),              // 放弃任务的墓碑，防旧数据把删掉的任务带回来
         read: [...getReadSet()],        // 已读列表（时间戳），拉取时只增不减地合并
       }),
     });
@@ -1751,9 +1869,13 @@ async function pullCloud() {
     const doc = await res.json();
     if (syncUrl !== myUrl) return;
     let pushed = false;
+    if (doc) mergeTombs(doc.tombs);   // 先合并墓碑：任务合并要靠它判断"删了"还是"新加"
     if (doc && Array.isArray(doc.tasks) && doc.updated_at > getUpdatedAt()) {
-      // 云端更新：整份采用，并按今天的日期做日常重置（留言除外——见下方"只增不减"合并）
+      // 云端更新：以云端为底，但把本地更新的完成状态/新加的任务合并进去，
+      // 再也不整份替换——一台设备的旧数据冲不掉另一台的打卡（留言/流水另有"只增不减"合并）
+      const localTasks = tasks;
       tasks = doc.tasks;
+      const rescued = mergeTasks(tasks, localTasks);
       localStorage.setItem(KEY, JSON.stringify(tasks));
       localStorage.setItem(META_KEY, String(doc.updated_at));
       if (doc.title) { localStorage.setItem(TITLE_KEY, doc.title); renderTitle(); }
@@ -1762,16 +1884,34 @@ async function pullCloud() {
                   : localStorage.removeItem(DOING_KEY);
         renderDoing();
       }
-      if (doc.log) { localStorage.setItem(LOG_KEY, JSON.stringify(doc.log)); renderReview(); }
       const before = JSON.stringify(tasks);
       fixOldTasks(tasks);
       resetDailyTasks(tasks);
-      if (JSON.stringify(tasks) !== before) save();   // 重置产生了变化才算新改动
+      // 抢救回了本地的状态，或重置产生了变化 → 算新改动，把合并结果推回云端
+      if (rescued || JSON.stringify(tasks) !== before) { save(); pushed = true; }
       render();
       vaultTasks();   // 云端采用后也备份一份（若被并发覆盖，之前的好版本仍在库里）
     } else if (!doc || (doc.updated_at || 0) < getUpdatedAt()) {
-      pushCloud();   // 云端是空的或更旧：把本地推上去
+      // 本地更新：推之前先把云端里更新的完成状态捡回来（对面设备的打卡）
+      if (doc && Array.isArray(doc.tasks) && mergeTasks(tasks, doc.tasks)) {
+        fixOldTasks(tasks);
+        resetDailyTasks(tasks);
+        save(); render();   // save()会顺带推云端
+      } else {
+        pushCloud();   // 云端是空的或更旧：把本地推上去
+      }
       pushed = true;
+    }
+
+    // 打卡流水：只增不减合并 + 撤销名单（同留言板）——坏同步冲不掉回顾记录
+    if (doc) {
+      let logChanged = mergeRevokes(doc.logRevoked);
+      logChanged = mergeIncomingLog(doc.log) || logChanged;
+      logChanged = applyRevokes() || logChanged;
+      if (logChanged) renderReview();
+      // 云端缺了本地有的流水 → 说明云端被写旧/写空了，补回云端
+      const cloudLog = new Set((Array.isArray(doc.log) ? doc.log : []).map(logId));
+      if (!pushed && getLog().some(e => !cloudLog.has(logId(e)))) pushCloud();
     }
 
     // 留言：永远只增不减地合并——任何一次同步都冲不掉整段对话（防复发核心）
