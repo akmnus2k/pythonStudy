@@ -69,20 +69,28 @@
 
   /* 外层只有 任务信息+打卡；点任务展开内层编辑面板 */
   .card .info { cursor: pointer; }
-  .edit-row { display: flex; gap: 8px; margin-top: 8px; align-items: center; font-size: 0.9rem; }
+  /* 卡片内的编辑面板：控件比全局小一号、行距收紧，手机上不臃肿 */
+  .edit-row { display: flex; gap: 6px; margin-top: 6px; align-items: center; font-size: 0.88rem; }
   .edit-row input[type=text] { flex: 1; }
-  .edit-row select { padding: 8px; border: 1px solid var(--soft); border-radius: 8px;
-                     background: var(--bg); color: var(--text); font-size: 0.95rem; }
-  .edit-row input[type=number] { width: 70px; padding: 8px; }
+  .edit-row span { flex: 0 0 auto; color: var(--muted); }
+  .subs input[type=text], .subs input[type=number], .subs select {
+    padding: 6px 8px; font-size: 0.9rem; border-radius: 6px;
+  }
+  .edit-row select { width: auto; padding: 6px 8px; border: 1px solid var(--soft); border-radius: 6px;
+                     background: var(--bg); color: var(--text); font-size: 0.9rem; }
+  .edit-row input[type=number] { width: 54px; }
+  .edit-row input[type=date] { padding: 4px 6px; font-size: 0.9rem; border: 1px solid var(--soft);
+                               border-radius: 6px; background: var(--bg); color: var(--text); min-width: 0; }
 
-  .subs { margin-top: 8px; border-top: 1px solid var(--soft); padding-top: 8px; }
+  .subs { margin-top: 6px; border-top: 1px solid var(--soft); padding-top: 6px; }
   .sub-line { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 0.92rem; }
   .sub-line input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--primary-dark); }
   .sub-line .sub-name { flex: 1; }
   .sub-line .sub-done { color: var(--muted); text-decoration: line-through; }
   .sub-line button { padding: 2px 8px; background: none; color: var(--muted); }
   .sub-add { display: flex; gap: 6px; margin-top: 6px; }
-  .sub-add input { flex: 1; padding: 8px; }
+  .sub-add input { flex: 1; }
+  .sub-add button { padding: 6px 12px; font-size: 0.9rem; }
   .card .name { font-weight: 600; color: var(--text-strong); }
   .fire { color: var(--muted); font-size: 0.85rem; }
 
@@ -1610,14 +1618,13 @@ function editPanel(t) {
     pre.textContent = "截止";
     const dueInput = document.createElement("input");
     dueInput.type = "date";                 // 存的就是日期，倒计时随时间自然减少
+    dueInput.title = "清空日期＝不限期";     // 提示收进悬浮气泡，不占一行
     dueInput.value = t.due;
     dueInput.onchange = () => {
       t.due = dueInput.value;               // 清空日期 = 不限期
       save(); render();
     };
-    const post = document.createElement("span");
-    post.textContent = "（清空=不限）";
-    optRow.append(pre, dueInput, post);
+    optRow.append(pre, dueInput);
   }
   panel.append(optRow);
 
@@ -1630,7 +1637,8 @@ function editPanel(t) {
     box.type = "checkbox";
     box.checked = !!t.track;
     box.onchange = () => { t.track = box.checked; save(); render(); };
-    trackRow.append(box, document.createTextNode("完成后保留·显示上次时间（不自动重置）"));
+    trackRow.title = "勾上后：完成不自动重置，只显示上次完成时间";
+    trackRow.append(box, document.createTextNode("完成后保留·不自动重置"));
     panel.append(trackRow);
   }
 
