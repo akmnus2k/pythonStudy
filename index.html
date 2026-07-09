@@ -64,6 +64,8 @@
   .next-step { font-size: 0.85rem; color: var(--muted); margin-top: 2px; cursor: pointer; }
   /* 躺平提醒：温和的灰色小字，不用红色吓人 */
   .stale-hint { font-size: 0.8rem; color: var(--muted); margin-top: 3px; }
+  /* 今天的推进脚印（点击可撤销） */
+  .push-note { font-size: 0.8rem; color: var(--muted); margin-top: 3px; cursor: pointer; }
 
   /* 外层只有 任务信息+打卡；点任务展开内层编辑面板 */
   .card .info { cursor: pointer; }
@@ -733,11 +735,14 @@ function endDrag() {
 
 // 完成流水：每打卡一次记一条，只留最近60天，供"回顾"按天统计
 const getLog = () => JSON.parse(localStorage.getItem(LOG_KEY) || "[]");
-function logDone(name, push) {
+function logDone(name, push, note) {
   const cut = Date.now() - 60 * 864e5;
   const a = getLog().filter(e => e.at >= cut);
   const entry = { name, at: Date.now() };
-  if (push) entry.push = true;   // 🐾推进了一点，不是完成
+  if (push) {
+    entry.push = true;             // 🐾推进了一点，不是完成
+    if (note) entry.note = note;   // 具体推进了什么
+  }
   a.push(entry);
   localStorage.setItem(LOG_KEY, JSON.stringify(a));
 }
@@ -803,11 +808,30 @@ function pushStreakOf(name) {
 }
 
 function pushForward(t) {
-  logDone(t.name, true);
+  // 必须写下具体推进了什么才算——防止🐾变成没有内容的自我安慰
+  const raw = prompt(`「${t.name}」推进了什么？写一句留个脚印：`, "");
+  if (raw === null) return;   // 点了取消，安静退出
+  const note = raw.trim();
+  if (!note) { flash("写一句具体做了什么才算推进哦 🐾"); return; }
+  logDone(t.name, true, note);
   t.touched_at = Date.now();   // 躺平计时清零
   save();                      // 顺带云同步
   const n = pushStreakOf(t.name);
-  flash(n >= 2 ? `🐾 「${t.name}」又往前挪了一点！连续${n}天 🌱` : `🐾 「${t.name}」往前挪了一点，比躺着强！`);
+  flash(n >= 2 ? `🐾 ${note} —— 连续${n}天推进中 🌱` : `🐾 记下了：${note}`);
+  render();
+}
+
+// 撤销一次推进：进撤销名单再删，别的设备也跟着撤，且不会被合并救回来
+function unpush(entry) {
+  revokeLogEntry(entry);
+  const log = getLog();
+  for (let i = log.length - 1; i >= 0; i--) {
+    if (log[i].push && log[i].name === entry.name && log[i].at === entry.at) { log.splice(i, 1); break; }
+  }
+  localStorage.setItem(LOG_KEY, JSON.stringify(log));
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(pushCloud, 400);
+  flash("↩ 已撤销这次推进");
   render();
 }
 
@@ -1160,16 +1184,17 @@ const timeHM = at => { const d = new Date(at), p = n => String(n).padStart(2, "0
 function buildReviewAgg() {
   const agg = {};
   const dkey = at => dateStr(new Date(at));
-  const ensure = k => (agg[k] || (agg[k] = { mineDone: {}, theirsDone: {}, minePush: {}, theirsPush: {}, msgs: [] }));
-  for (const e of getLog()) { const a = ensure(dkey(e.at)); const d = e.push ? a.minePush : a.mineDone; d[e.name] = (d[e.name] || 0) + 1; }
-  for (const e of otherLogCache) { const a = ensure(dkey(e.at)); const d = e.push ? a.theirsPush : a.theirsDone; d[e.name] = (d[e.name] || 0) + 1; }
+  // 推进(🐾)存整条流水（要展示备注内容），完成仍按名字计数
+  const ensure = k => (agg[k] || (agg[k] = { mineDone: {}, theirsDone: {}, minePush: [], theirsPush: [], msgs: [] }));
+  for (const e of getLog()) { const a = ensure(dkey(e.at)); if (e.push) a.minePush.push(e); else { const d = a.mineDone; d[e.name] = (d[e.name] || 0) + 1; } }
+  for (const e of otherLogCache) { const a = ensure(dkey(e.at)); if (e.push) a.theirsPush.push(e); else { const d = a.theirsDone; d[e.name] = (d[e.name] || 0) + 1; } }
   for (const m of getMsgs()) ensure(dkey(m.at)).msgs.push({ text: m.text, at: m.at, mine: true });
   for (const m of otherMsgsCache) ensure(dkey(m.at)).msgs.push({ text: m.text, at: m.at, mine: false });
   return agg;
 }
 
 const hasAny = a => a && (Object.keys(a.mineDone).length || Object.keys(a.theirsDone).length ||
-  Object.keys(a.minePush).length || Object.keys(a.theirsPush).length || a.msgs.length);
+  a.minePush.length || a.theirsPush.length || a.msgs.length);
 
 function renderReview() {
   const modal = document.getElementById("reviewModal");
@@ -1220,8 +1245,8 @@ function renderReview() {
     // 圆点：谁那天有动静（完成或留言）就亮谁的颜色
     const dots = document.createElement("div");
     dots.className = "cal-dots";
-    const mineAct = a && (Object.keys(a.mineDone).length || Object.keys(a.minePush).length || a.msgs.some(m => m.mine));
-    const otherAct = a && (Object.keys(a.theirsDone).length || Object.keys(a.theirsPush).length || a.msgs.some(m => !m.mine));
+    const mineAct = a && (Object.keys(a.mineDone).length || a.minePush.length || a.msgs.some(m => m.mine));
+    const otherAct = a && (Object.keys(a.theirsDone).length || a.theirsPush.length || a.msgs.some(m => !m.mine));
     if (mineAct) { const d = document.createElement("div"); d.className = "cal-dot mine"; dots.append(d); }
     if (otherAct) { const d = document.createElement("div"); d.className = "cal-dot other"; dots.append(d); }
     cell.append(dots);
@@ -1253,7 +1278,7 @@ function renderDayDetail(a) {
 
   // 已完成：单独一块，分人一行，✓ 名字用各自颜色标出是谁
   if (Object.keys(a.mineDone).length || Object.keys(a.theirsDone).length ||
-      Object.keys(a.minePush).length || Object.keys(a.theirsPush).length) {
+      a.minePush.length || a.theirsPush.length) {
     const sec = document.createElement("div");
     sec.className = "review-sec";
     const t = document.createElement("div");
@@ -1275,9 +1300,20 @@ function renderDayDetail(a) {
     };
     doneRow(profileLabel(profile), "p-mine", a.mineDone, "✓");
     doneRow(profileLabel(otherP), "p-other", a.theirsDone, "✓");
-    // 🐾推进的单独一行：摸过但还没做完的，也值得被看见
-    doneRow(profileLabel(profile), "p-mine", a.minePush, "🐾");
-    doneRow(profileLabel(otherP), "p-other", a.theirsPush, "🐾");
+    // 🐾推进的单独一行：连备注一起展示——摸过但还没做完的，也值得被看见
+    const pushRow = (label, cls, list) => {
+      if (!list.length) return;
+      const line = document.createElement("div");
+      line.className = "review-done";
+      const who = document.createElement("span");
+      who.className = cls;
+      who.textContent = `🐾 ${label}：`;
+      line.append(who, document.createTextNode(
+        list.map(e => e.note ? `${e.name}（${e.note}）` : e.name).join(" · ")));
+      sec.append(line);
+    };
+    pushRow(profileLabel(profile), "p-mine", a.minePush);
+    pushRow(profileLabel(otherP), "p-other", a.theirsPush);
     box.append(sec);
   }
 
@@ -1438,6 +1474,24 @@ function taskCard(t) {
       flash(`✓ 「${next.name}」搞定，又近了一步！`);
     };
     info.append(nextDiv);
+  }
+
+  // 今天的推进脚印：显示最近一条的内容，点一下可撤销（回顾里只看不改，撤销入口在这）
+  if (t.category !== "日常") {
+    const todayPushes = getLog().filter(e =>
+      e.push && e.name === t.name && dateStr(new Date(e.at)) === todayStr());
+    if (todayPushes.length) {
+      const last = todayPushes[todayPushes.length - 1];
+      const pn = document.createElement("div");
+      pn.className = "push-note";
+      pn.textContent = `🐾 ${last.note || "推进了一点"}`;
+      pn.title = "今天的推进；点一下撤销这条";
+      pn.onclick = e => {
+        e.stopPropagation();
+        if (confirm(`撤销这次推进（${last.note || "推进了一点"}）？`)) unpush(last);
+      };
+      info.append(pn);
+    }
   }
 
   // 躺平提醒：近一周的任务5天没碰过，温和地提示做个决定（不用红色）
