@@ -154,6 +154,8 @@
   .review-sec { background: var(--bg); border-radius: 10px; padding: 8px 11px; margin-top: 10px; }
   .review-sec-title { font-size: 0.8rem; font-weight: 700; color: var(--muted); margin-bottom: 6px; }
   .review-done { font-size: 0.92rem; margin: 4px 0; }
+  /* 自己的记录可以点一下减1（记多了修正用），虚线下划线做提示 */
+  .review-editable { cursor: pointer; border-bottom: 1px dashed var(--muted); }
   .review-msg { color: var(--text); font-size: 0.9rem; margin: 3px 0; }
   .review-msg.other { color: var(--muted); }
   .review-empty { color: var(--muted); text-align: center; padding: 20px 0; }
@@ -768,6 +770,24 @@ function mergeIncomingLog(incoming) {
   localStorage.setItem(LOG_KEY, JSON.stringify(merged));
   return true;
 }
+// 回顾里点自己的某条记录 = 把那天这条打卡减1：
+// 进撤销名单再删，别的设备跟着减，且不会被"只增不减"合并救回来
+function removeLogOnDay(name, dayKey) {
+  const log = getLog();
+  for (let i = log.length - 1; i >= 0; i--) {
+    if (log[i].name === name && dateStr(new Date(log[i].at)) === dayKey) {
+      revokeLogEntry(log[i]);
+      log.splice(i, 1);
+      localStorage.setItem(LOG_KEY, JSON.stringify(log));
+      clearTimeout(pushTimer);
+      pushTimer = setTimeout(pushCloud, 400);
+      renderReview();
+      flash(`✏ 已把「${name}」减1`);
+      return;
+    }
+  }
+}
+
 // 撤销名单可能从别的设备同步过来：把本地流水里对应的条目也清掉
 function applyRevokes() {
   const revoked = new Set(getRevoked().map(logId));
@@ -1226,7 +1246,7 @@ function renderDayDetail(a) {
     t.className = "review-sec-title";
     t.textContent = "✅ 已完成";
     sec.append(t);
-    const doneRow = (label, cls, doneMap) => {
+    const doneRow = (label, cls, doneMap, editable) => {
       const names = Object.keys(doneMap);
       if (!names.length) return;
       const line = document.createElement("div");
@@ -1234,12 +1254,28 @@ function renderDayDetail(a) {
       const who = document.createElement("span");
       who.className = cls;
       who.textContent = `✓ ${label}：`;
-      line.append(who, document.createTextNode(
-        names.map(n => doneMap[n] > 1 ? `${n}×${doneMap[n]}` : n).join(" · ")));
+      line.append(who);
+      names.forEach((n, i) => {
+        if (i) line.append(document.createTextNode(" · "));
+        const item = document.createElement("span");
+        item.textContent = doneMap[n] > 1 ? `${n}×${doneMap[n]}` : n;
+        if (editable) {
+          // 只能改自己档案的记录；对方的要切到对方档案里改
+          item.className = "review-editable";
+          item.title = "点一下减1（记多了可以改）";
+          item.onclick = () => {
+            const cnt = doneMap[n];
+            const msg = cnt > 1 ? `把这天的「${n}」从×${cnt}改成×${cnt - 1}？`
+                                : `把这天的「${n}」这条记录去掉？`;
+            if (confirm(msg)) removeLogOnDay(n, selectedDay);
+          };
+        }
+        line.append(item);
+      });
       sec.append(line);
     };
-    doneRow(profileLabel(profile), "p-mine", a.mineDone);
-    doneRow(profileLabel(otherP), "p-other", a.theirsDone);
+    doneRow(profileLabel(profile), "p-mine", a.mineDone, true);
+    doneRow(profileLabel(otherP), "p-other", a.theirsDone, false);
     box.append(sec);
   }
 
