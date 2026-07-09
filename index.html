@@ -1565,12 +1565,7 @@ function editPanel(t) {
     if (v && v !== t.name) { t.name = v; save(); render(); }
   };
   nameInput.addEventListener("keydown", e => { if (e.key === "Enter") nameInput.blur(); });
-  nameRow.append(nameInput);
-  panel.append(nameRow);
-
-  // 类别 + 每天次数
-  const optRow = document.createElement("div");
-  optRow.className = "edit-row";
+  // 类别下拉跟名称同一行，省一行高度
   const catSel = document.createElement("select");
   for (const c of ["日常", "近期", "兴趣"]) {
     const o = document.createElement("option");
@@ -1579,7 +1574,12 @@ function editPanel(t) {
     catSel.append(o);
   }
   catSel.onchange = () => { t.category = catSel.value; save(); render(); };
-  optRow.append(catSel);
+  nameRow.append(nameInput, catSel);
+  panel.append(nameRow);
+
+  // 第二行：频率（日常）/截止（近期）；兴趣任务没有这行
+  const optRow = document.createElement("div");
+  optRow.className = "edit-row";
 
   if (t.category === "日常") {
     const pre = document.createElement("span");
@@ -1626,7 +1626,7 @@ function editPanel(t) {
     };
     optRow.append(pre, dueInput);
   }
-  panel.append(optRow);
+  if (optRow.children.length) panel.append(optRow);   // 空行（兴趣类）不占地方
 
   // "完成后保留·显示上次时间（不自动重置）"开关——三类任务通用，和日常一致
   {
