@@ -81,6 +81,9 @@
   .edit-row input[type=number] { width: 54px; }
   .edit-row input[type=date] { padding: 4px 6px; font-size: 0.9rem; border: 1px solid var(--soft);
                                border-radius: 6px; background: var(--bg); color: var(--text); min-width: 0; }
+  /* "自动重置"开关：靠行尾右侧，不单占一行 */
+  .reset-toggle { margin-left: auto; display: flex; align-items: center; gap: 4px;
+                  cursor: pointer; white-space: nowrap; color: var(--muted); }
 
   .subs { margin-top: 6px; border-top: 1px solid var(--soft); padding-top: 6px; }
   .sub-line { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 0.92rem; }
@@ -1628,28 +1631,25 @@ function editPanel(t) {
     };
     optRow.append(pre, dueInput);
   }
-  if (optRow.children.length) panel.append(optRow);   // 空行（兴趣类）不占地方
 
-  // "完成后自动重置"开关——三类任务通用；默认不勾＝保留（不自动重置）
-  {
-    const trackRow = document.createElement("label");
-    trackRow.className = "edit-row";
-    trackRow.style.cursor = "pointer";
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.checked = !t.track;
-    box.onchange = () => {
-      t.track = !box.checked;
-      if (t.track) {   // 切回保留模式：次数归一，否则要点好几次✓才算完成
-        t.times = 1;
-        t.left = t.done ? 0 : 1;
-      }
-      save(); render();
-    };
-    trackRow.title = "勾上＝按周期自动重置回待办（日常打卡）；不勾＝完成后保留，显示上次时间";
-    trackRow.append(box, document.createTextNode("完成后自动重置·周期打卡"));
-    panel.append(trackRow);
-  }
+  // "自动重置"开关贴在频率/截止那行的最右边，不单占一行；三类任务通用
+  const resetLab = document.createElement("label");
+  resetLab.className = "reset-toggle";
+  resetLab.title = "勾上＝按周期自动重置回待办（日常打卡）；不勾＝完成后保留，显示上次时间";
+  const resetBox = document.createElement("input");
+  resetBox.type = "checkbox";
+  resetBox.checked = !t.track;
+  resetBox.onchange = () => {
+    t.track = !resetBox.checked;
+    if (t.track) {   // 切回保留模式：次数归一，否则要点好几次✓才算完成
+      t.times = 1;
+      t.left = t.done ? 0 : 1;
+    }
+    save(); render();
+  };
+  resetLab.append(resetBox, document.createTextNode("自动重置"));
+  optRow.append(resetLab);
+  panel.append(optRow);
 
   // 备注清单；"放弃"垃圾桶放进备注输入行的最右边（排序改为在列表里拖动把手）
   const subs = subsPanel(t);
