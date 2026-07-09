@@ -61,7 +61,9 @@
   }
   .card .row { display: flex; align-items: center; gap: 8px; }
   .card .info { flex: 1; min-width: 0; }
-  .next-step { font-size: 0.85rem; color: var(--muted); margin-top: 2px; }
+  .next-step { font-size: 0.85rem; color: var(--muted); margin-top: 2px; cursor: pointer; }
+  /* 躺平提醒：温和的灰色小字，不用红色吓人 */
+  .stale-hint { font-size: 0.8rem; color: var(--muted); margin-top: 3px; }
 
   /* 外层只有 任务信息+打卡；点任务展开内层编辑面板 */
   .card .info { cursor: pointer; }
@@ -216,6 +218,7 @@
   }
   /* 卡片上两个图标方框按钮：▶ 在做、✓ 完成 */
   .doing-btn { background: var(--soft); color: var(--text-strong); padding: 8px 12px; font-size: 1rem; }
+  .push-btn { background: var(--soft); padding: 8px 10px; font-size: 1rem; }
   .check-btn { background: var(--soft); color: var(--text-strong); padding: 8px 13px; font-size: 1rem; font-weight: 700; }
 
   /* 拖拽排序：长按任务框进入拖动。禁掉长按选中/系统菜单，体验才顺 */
@@ -574,6 +577,7 @@ function fixOldTasks(list) {
     if (t.due === undefined) t.due = "";     // 近期任务的到期日（倒计时）
     if (t.period === undefined) t.period = "天";   // 频率单位：天/周/月，旧任务都是每天
     if (t.track === undefined) t.track = false;    // true=完成后保留不重置，只显示上次时间
+    if (t.seen_at === undefined) t.seen_at = Date.now();   // 首次见到的时刻，躺平计时的兜底起点
   }
 }
 
@@ -729,10 +733,12 @@ function endDrag() {
 
 // 完成流水：每打卡一次记一条，只留最近60天，供"回顾"按天统计
 const getLog = () => JSON.parse(localStorage.getItem(LOG_KEY) || "[]");
-function logDone(name) {
+function logDone(name, push) {
   const cut = Date.now() - 60 * 864e5;
   const a = getLog().filter(e => e.at >= cut);
-  a.push({ name, at: Date.now() });
+  const entry = { name, at: Date.now() };
+  if (push) entry.push = true;   // 🐾推进了一点，不是完成
+  a.push(entry);
   localStorage.setItem(LOG_KEY, JSON.stringify(a));
 }
 
@@ -777,6 +783,32 @@ function applyRevokes() {
   if (kept.length === log.length) return false;
   localStorage.setItem(LOG_KEY, JSON.stringify(kept));
   return true;
+}
+
+// ---------- 🐾推进：大任务不用做完，摸了就算 ----------
+// 一件事最后一次被"碰过"的时刻：新建、打卡、撤销、推进、勾小步都算（躺平提醒用）
+const lastTouchAt = t => Math.max(
+  t.seen_at || 0, t.created_at || 0, t.done_at || 0, t.undone_at || 0, t.touched_at || 0,
+  t.last_done ? parseDate(t.last_done).getTime() : 0);
+
+// 连续推进了几天：今天还没推进不清零，从昨天起算（对ADHD温和一点）
+function pushStreakOf(name) {
+  const days = new Set();
+  for (const e of getLog()) if (e.push && e.name === name) days.add(dateStr(new Date(e.at)));
+  let d = todayStr();
+  if (!days.has(d)) d = dayBefore(d);
+  let n = 0;
+  while (days.has(d)) { n++; d = dayBefore(d); }
+  return n;
+}
+
+function pushForward(t) {
+  logDone(t.name, true);
+  t.touched_at = Date.now();   // 躺平计时清零
+  save();                      // 顺带云同步
+  const n = pushStreakOf(t.name);
+  flash(n >= 2 ? `🐾 「${t.name}」又往前挪了一点！连续${n}天 🌱` : `🐾 「${t.name}」往前挪了一点，比躺着强！`);
+  render();
 }
 
 function checkIn(t) {
@@ -1128,15 +1160,16 @@ const timeHM = at => { const d = new Date(at), p = n => String(n).padStart(2, "0
 function buildReviewAgg() {
   const agg = {};
   const dkey = at => dateStr(new Date(at));
-  const ensure = k => (agg[k] || (agg[k] = { mineDone: {}, theirsDone: {}, msgs: [] }));
-  for (const e of getLog()) { const d = ensure(dkey(e.at)).mineDone; d[e.name] = (d[e.name] || 0) + 1; }
-  for (const e of otherLogCache) { const d = ensure(dkey(e.at)).theirsDone; d[e.name] = (d[e.name] || 0) + 1; }
+  const ensure = k => (agg[k] || (agg[k] = { mineDone: {}, theirsDone: {}, minePush: {}, theirsPush: {}, msgs: [] }));
+  for (const e of getLog()) { const a = ensure(dkey(e.at)); const d = e.push ? a.minePush : a.mineDone; d[e.name] = (d[e.name] || 0) + 1; }
+  for (const e of otherLogCache) { const a = ensure(dkey(e.at)); const d = e.push ? a.theirsPush : a.theirsDone; d[e.name] = (d[e.name] || 0) + 1; }
   for (const m of getMsgs()) ensure(dkey(m.at)).msgs.push({ text: m.text, at: m.at, mine: true });
   for (const m of otherMsgsCache) ensure(dkey(m.at)).msgs.push({ text: m.text, at: m.at, mine: false });
   return agg;
 }
 
-const hasAny = a => a && (Object.keys(a.mineDone).length || Object.keys(a.theirsDone).length || a.msgs.length);
+const hasAny = a => a && (Object.keys(a.mineDone).length || Object.keys(a.theirsDone).length ||
+  Object.keys(a.minePush).length || Object.keys(a.theirsPush).length || a.msgs.length);
 
 function renderReview() {
   const modal = document.getElementById("reviewModal");
@@ -1187,8 +1220,8 @@ function renderReview() {
     // 圆点：谁那天有动静（完成或留言）就亮谁的颜色
     const dots = document.createElement("div");
     dots.className = "cal-dots";
-    const mineAct = a && (Object.keys(a.mineDone).length || a.msgs.some(m => m.mine));
-    const otherAct = a && (Object.keys(a.theirsDone).length || a.msgs.some(m => !m.mine));
+    const mineAct = a && (Object.keys(a.mineDone).length || Object.keys(a.minePush).length || a.msgs.some(m => m.mine));
+    const otherAct = a && (Object.keys(a.theirsDone).length || Object.keys(a.theirsPush).length || a.msgs.some(m => !m.mine));
     if (mineAct) { const d = document.createElement("div"); d.className = "cal-dot mine"; dots.append(d); }
     if (otherAct) { const d = document.createElement("div"); d.className = "cal-dot other"; dots.append(d); }
     cell.append(dots);
@@ -1219,7 +1252,8 @@ function renderDayDetail(a) {
   }
 
   // 已完成：单独一块，分人一行，✓ 名字用各自颜色标出是谁
-  if (Object.keys(a.mineDone).length || Object.keys(a.theirsDone).length) {
+  if (Object.keys(a.mineDone).length || Object.keys(a.theirsDone).length ||
+      Object.keys(a.minePush).length || Object.keys(a.theirsPush).length) {
     const sec = document.createElement("div");
     sec.className = "review-sec";
     const t = document.createElement("div");
@@ -1227,20 +1261,23 @@ function renderDayDetail(a) {
     t.textContent = "✅ 已完成";
     sec.append(t);
     // 回顾只是回顾：纯展示，不提供事后编辑（当天记错了当天用"还原"撤）
-    const doneRow = (label, cls, doneMap) => {
+    const doneRow = (label, cls, doneMap, icon) => {
       const names = Object.keys(doneMap);
       if (!names.length) return;
       const line = document.createElement("div");
       line.className = "review-done";
       const who = document.createElement("span");
       who.className = cls;
-      who.textContent = `✓ ${label}：`;
+      who.textContent = `${icon} ${label}：`;
       line.append(who, document.createTextNode(
         names.map(n => doneMap[n] > 1 ? `${n}×${doneMap[n]}` : n).join(" · ")));
       sec.append(line);
     };
-    doneRow(profileLabel(profile), "p-mine", a.mineDone);
-    doneRow(profileLabel(otherP), "p-other", a.theirsDone);
+    doneRow(profileLabel(profile), "p-mine", a.mineDone, "✓");
+    doneRow(profileLabel(otherP), "p-other", a.theirsDone, "✓");
+    // 🐾推进的单独一行：摸过但还没做完的，也值得被看见
+    doneRow(profileLabel(profile), "p-mine", a.minePush, "🐾");
+    doneRow(profileLabel(otherP), "p-other", a.theirsPush, "🐾");
     box.append(sec);
   }
 
@@ -1310,7 +1347,7 @@ function subsPanel(t) {
     const box = document.createElement("input");
     box.type = "checkbox";
     box.checked = s.done;
-    box.onchange = () => { s.done = box.checked; save(); render(); };
+    box.onchange = () => { s.done = box.checked; t.touched_at = Date.now(); save(); render(); };
 
     const name = document.createElement("span");
     name.className = "sub-name" + (s.done ? " sub-done" : "");
@@ -1363,6 +1400,10 @@ function taskCard(t) {
     if (periodKey(t.last_full, t.period) === prevKey) {
       fire = ` <span class="fire">🌱${t.streak}${unitOf(t.period)}连续中</span>`;
     }
+  } else if (t.category !== "日常") {
+    // 大任务的连击看🐾：连着几天都摸过它
+    const pn = pushStreakOf(t.name);
+    if (pn >= 2) fire = ` <span class="fire">🐾连续${pn}天推进中</span>`;
   }
   info.innerHTML = `<span class="name"></span>${fire}`;
   info.querySelector(".name").textContent = `${mark}${t.name}`;
@@ -1382,12 +1423,32 @@ function taskCard(t) {
       <div class="count">${span}${doneTimes}/${t.times}</div>`;
   }
   // 有备注就把第一条未勾的顶在脸上（一次只看一小步），全勾完/没备注就空白
+  // 点这一小步 = 直接做完它，不用展开面板
   const next = t.subs.find(s => !s.done);
   if (next) {
     const nextDiv = document.createElement("div");
     nextDiv.className = "next-step";
     nextDiv.textContent = `▸ ${next.name}`;
+    nextDiv.title = "点一下 = 这一小步做完了";
+    nextDiv.onclick = e => {
+      e.stopPropagation();
+      next.done = true;
+      t.touched_at = Date.now();
+      save(); render();
+      flash(`✓ 「${next.name}」搞定，又近了一步！`);
+    };
     info.append(nextDiv);
+  }
+
+  // 躺平提醒：近一周的任务5天没碰过，温和地提示做个决定（不用红色）
+  if (t.category === "近期" && !isUpcoming(t)) {
+    const idle = Math.floor((Date.now() - lastTouchAt(t)) / 864e5);
+    if (idle >= 5) {
+      const hint = document.createElement("div");
+      hint.className = "stale-hint";
+      hint.textContent = `🍃 躺了${idle}天了——拆一小步？改个日子？或放它走`;
+      info.append(hint);
+    }
   }
 
   // 点任务本身 = 展开/收起内层编辑面板；长按任务框 = 拖动排序
@@ -1411,7 +1472,17 @@ function taskCard(t) {
   btn.title = "打卡完成";
   btn.onclick = () => checkIn(t);
 
-  row.append(info, doingBtn, btn);
+  row.append(info);
+  if (t.category !== "日常") {
+    // 🐾推进：日常本来就小不需要；近期/兴趣的大任务摸了就能点
+    const paw = document.createElement("button");
+    paw.className = "push-btn";
+    paw.textContent = "🐾";
+    paw.title = "推进了一点（不用做完，摸了就算）";
+    paw.onclick = () => pushForward(t);
+    row.append(paw);
+  }
+  row.append(doingBtn, btn);
   card.append(row);
   if (expandedSubs.has(t)) card.append(editPanel(t));
   return card;
@@ -1544,7 +1615,7 @@ function restoreTask(t) {
   // 把今天这条完成流水也撤掉，回顾才对得上；记入撤销名单防同步合并救回来
   const log = getLog();
   for (let i = log.length - 1; i >= 0; i--) {
-    if (log[i].name === t.name && dateStr(new Date(log[i].at)) === todayStr()) {
+    if (!log[i].push && log[i].name === t.name && dateStr(new Date(log[i].at)) === todayStr()) {
       revokeLogEntry(log[i]);
       log.splice(i, 1); break;
     }
@@ -1634,8 +1705,16 @@ function render() {
       parts.push(t.name);
     }
   }
-  if (parts.length) {
-    strip.textContent = `✨ 今日已完成：${parts.join(" · ")}`;
+  // 今天🐾推进过的任务（去重），和完成的分开报
+  const pawToday = [];
+  for (const e of getLog()) {
+    if (e.push && dateStr(new Date(e.at)) === todayStr() && pawToday.indexOf(e.name) < 0) pawToday.push(e.name);
+  }
+  if (parts.length || pawToday.length) {
+    const seg = [];
+    if (parts.length) seg.push(`✨ 今日已完成：${parts.join(" · ")}`);
+    if (pawToday.length) seg.push(`🐾 推进了：${pawToday.join(" · ")}`);
+    strip.textContent = seg.join("　");
     strip.style.display = "";
   } else {
     strip.style.display = "none";
